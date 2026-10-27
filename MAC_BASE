@@ -1,0 +1,20 @@
+203d47354d89c32ad67d4b77fd9830d55ed30317 Ifthikar20/tutornote-apple-desktop claude/beautiful-gauss-rc0er0 (2026-10-27)
+
+# The Mac app's commit this Windows app was copied from. The files below are kept exactly as they
+# are at that commit: a change to one is made in the Mac repo first, then copied here, and the
+# commit above moves with it.
+src/main/apiTiming.ts
+src/main/boardHost.ts
+src/main/boardPlace.ts
+src/main/companionPlace.ts
+src/main/docIdentity.ts
+src/main/launchReveal.ts
+src/main/screenText.ts
+src/main/speechLog.ts
+scripts/tests/apiTiming.test.ts
+scripts/tests/boardHost.test.ts
+scripts/tests/boardPlace.test.ts
+scripts/tests/companionPlace.test.ts
+scripts/tests/docIdentity.test.ts
+scripts/tests/launchReveal.test.ts
+scripts/tests/speechLog.test.ts

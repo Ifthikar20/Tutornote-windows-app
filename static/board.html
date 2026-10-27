@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Tutornote</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+    <style>
+      /*
+        "Explain on screen"'s floating panel (src/main/explain.ts): what is happening until
+        the lesson is on screen ("Reading the page…"), or what went wrong and the way on, and
+        the way to pick another part. It floats above the app being read, beside the click,
+        and goes once the lesson (src/main/screenTeach.ts) has started.
+      */
+      :root {
+        color-scheme: light;
+        --paper: #fffdf8; --ink: #1f1d1a; --muted: #6b6760; --faint: #ece7dd; --brand: #7232e0; --brand-hover: #5b21b6;
+        --brand-tint: #f2edfc;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        display: flex; flex-direction: column; background: var(--paper); color: var(--ink);
+        font: 400 14px/1.55 -apple-system, BlinkMacSystemFont, "Inter", sans-serif; -webkit-font-smoothing: antialiased;
+        border: 1px solid var(--faint); border-radius: 12px; overflow: hidden;
+      }
+      header {
+        display: flex; align-items: center; gap: 10px; padding: 12px 12px 10px 14px; -webkit-app-region: drag;
+        border-bottom: 1px solid var(--faint);
+      }
+      .mark { width: 22px; height: 22px; flex: none; }
+      .who { flex: 1; min-width: 0; }
+      .who b { display: block; font-size: 13px; font-weight: 600; }
+      .who span { display: block; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      button { -webkit-app-region: no-drag; font: inherit; cursor: pointer; }
+      .x { width: 26px; height: 26px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); display: grid; place-items: center; }
+      .x:hover { background: var(--brand-tint); color: var(--brand); }
+      main { flex: 1; overflow: auto; padding: 14px 16px 6px; }
+      .status { color: var(--muted); font-size: 13px; }
+      .error { display: none; margin-top: 4px; color: #9a2b2b; }
+      .error.on { display: block; }
+      .actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+      footer { display: flex; align-items: center; gap: 8px; padding: 10px 12px 12px; border-top: 1px solid var(--faint); }
+      .primary { flex: 1; padding: 9px 12px; border: 0; border-radius: 8px; background: var(--brand); color: #fff; font-weight: 600; }
+      .primary:hover { background: var(--brand-hover); }
+      .ghost { padding: 8px 10px; border: 1px solid var(--faint); border-radius: 8px; background: #fff; color: var(--ink); }
+      .ghost:hover { border-color: var(--brand); color: var(--brand); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <svg class="mark" viewBox="0 0 512 512" aria-hidden="true">
+        <rect width="512" height="512" rx="116" fill="#1E1E1E" />
+        <path fill="#FFFFFF" d="M136 116a26 26 0 0 1 26-26h136l78 78v228a26 26 0 0 1-26 26H162a26 26 0 0 1-26-26V116Z" />
+        <path fill="#FFFFFF" fill-opacity="0.45" d="M298 90l78 78h-60a18 18 0 0 1-18-18V90Z" />
+        <g fill="#1E1E1E"><rect x="176" y="212" width="160" height="22" rx="11" /><rect x="176" y="264" width="160" height="22" rx="11" /><rect x="176" y="316" width="98" height="22" rx="11" /></g>
+      </svg>
+      <div class="who"><b>Tutornote</b><span id="source">Explain on screen</span></div>
+      <button class="x" id="close" type="button" title="Close" aria-label="Close">
+        <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="m2 2 6 6M8 2 2 8" /></svg>
+      </button>
+    </header>
+    <main>
+      <div class="status" id="status">Getting ready…</div>
+      <div class="error" id="error">
+        <div id="error-text"></div>
+        <div class="actions" id="error-actions"></div>
+      </div>
+    </main>
+    <footer>
+      <button class="primary" id="again" type="button">Explain another part</button>
+    </footer>
+    <script>
+      (function () {
+        var bridge = window.screenTutor;
+        if (!bridge) return;
+        var $ = function (id) { return document.getElementById(id); };
+        var status = $("status"), error = $("error");
+
+        function setStatus(text) { status.textContent = text || ""; status.style.display = text ? "block" : "none"; }
+
+        var LABELS = { settings: "Open System Settings", retry: "Try again", again: "Pick a paragraph" };
+        function showError(message) {
+          $("error-text").textContent = message.text;
+          var actions = $("error-actions");
+          actions.textContent = "";
+          (message.actions || []).forEach(function (name) {
+            var b = document.createElement("button");
+            b.type = "button"; b.className = "ghost"; b.textContent = LABELS[name] || name;
+            b.addEventListener("click", function () { bridge.send(name); });
+            actions.appendChild(b);
+          });
+          error.classList.add("on");
+          setStatus("");
+        }
+
+        bridge.onMessage(function (m) {
+          if (!m || !m.kind) return;
+          if (m.kind === "status") {
+            error.classList.remove("on");
+            setStatus(m.text);
+          } else if (m.kind === "error") {
+            showError(m);
+          }
+        });
+
+        $("again").addEventListener("click", function () { bridge.send("again"); });
+        $("close").addEventListener("click", function () { bridge.send("close"); });
+      })();
+    </script>
+  </body>
+</html>

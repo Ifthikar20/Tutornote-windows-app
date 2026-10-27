@@ -1,0 +1,33 @@
+{
+  "name": "tutornote-windows",
+  "productName": "Tutornote",
+  "version": "0.1.0",
+  "description": "Tutornote for Windows: the web app in a window of its own.",
+  "private": true,
+  "author": "Tutornote",
+  "main": "dist/main/index.js",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --experimental-strip-types --test scripts/tests/boardHost.test.ts scripts/tests/boardPlace.test.ts scripts/tests/companionPlace.test.ts scripts/tests/speechLog.test.ts scripts/tests/apiTiming.test.ts scripts/tests/launchReveal.test.ts scripts/tests/docIdentity.test.ts",
+    "renderer": "node scripts/build-renderer.mjs",
+    "start": "npm run build && electron .",
+    "pack": "npm run build && electron-builder --win --x64 --dir --publish never --config electron-builder.config.cjs",
+    "dist": "npm run build && electron-builder --win --x64 --publish never --config electron-builder.config.cjs"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "electron": "^44.9.3",
+    "electron-builder": "^26.15.3",
+    "typescript": "^5.9.0"
+  },
+  "allowScripts": {
+    "electron@44.9.3": true
+  }
+}

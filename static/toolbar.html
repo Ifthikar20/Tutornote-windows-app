@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Tutornote</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+    <style>
+      /*
+        Tabs the way Notion draws them: a strip in the sidebar's tone, flat tabs of one width
+        side by side with a hairline between them, and the active tab filled with the page's
+        own colour and open at the bottom, so it runs into the page under it. Every other
+        tab sits on the strip, above its bottom hairline.
+      */
+      :root {
+        color-scheme: light dark;
+        --bar: #f7f7f5; --ink: #2c2c2b; --muted: rgba(55, 53, 47, .62); --faint: rgba(55, 53, 47, .22);
+        --hover: rgba(55, 53, 47, .06); --active: #ffffff; --edge: rgba(55, 53, 47, .07);
+        --active-ink: var(--ink); --active-muted: var(--muted); --active-hover: var(--hover);
+        /* The buttons (back, new tab) in the web app's brand purple (--brand-accent, its
+           --accent tint for the hover, src/index.css in the web repo). */
+        --button: #7232e0; --button-hover: #5b21b6; --button-tint: #f2edfc; --button-faint: rgba(114, 50, 224, .3);
+      }
+      :root.dark {
+        --bar: #202020; --ink: rgba(255, 255, 255, .9); --muted: rgba(255, 255, 255, .5); --faint: rgba(255, 255, 255, .2);
+        --hover: rgba(255, 255, 255, .055); --active: #191919; --edge: rgba(255, 255, 255, .08);
+        --button: #a78bfa; --button-hover: #c4b5fd; --button-tint: rgba(167, 139, 250, .16); --button-faint: rgba(167, 139, 250, .3);
+      }
+      /* The active tab's own inks, for its fill (the page's colour), which can be light under a
+         dark strip or dark under a light one (Read mode, the PDF reader at Night). */
+      :root.active-light { --active-ink: #2c2c2b; --active-muted: rgba(55, 53, 47, .62); --active-hover: rgba(55, 53, 47, .06); }
+      :root.active-dark { --active-ink: rgba(255, 255, 255, .9); --active-muted: rgba(255, 255, 255, .5); --active-hover: rgba(255, 255, 255, .055); }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; overflow: hidden; }
+      body {
+        background: var(--bar); color: var(--ink);
+        font: 13px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased; -webkit-user-select: none; user-select: none; cursor: default;
+      }
+      .bar {
+        display: flex; align-items: stretch; height: 100%; padding: 0 var(--captions, 8px) 0 var(--lights, 8px);
+        box-shadow: inset 0 -1px 0 var(--edge); -webkit-app-region: drag;
+      }
+      body.hidden .bar { visibility: hidden; }
+      button, .tab { -webkit-app-region: no-drag; }
+      .icon {
+        display: grid; place-items: center; flex: none; align-self: center; width: 28px; height: 28px; padding: 0;
+        border: 0; border-radius: 6px; background: transparent; color: var(--button);
+      }
+      .icon:hover:not(:disabled) { background: var(--button-tint); color: var(--button-hover); }
+      .icon svg { width: 16px; height: 16px; }
+      .icon:disabled { color: var(--button-faint); }
+      /* Back: one step back in the active tab, faint when there is nowhere to go. */
+      #back { margin-right: 8px; }
+      body.signin #back { display: none; }
+      .tabs { display: flex; align-items: stretch; min-width: 0; flex: 0 1 auto; overflow: hidden; }
+      .tab {
+        position: relative; display: flex; align-items: center; gap: 6px; flex: 0 1 auto; width: 200px; min-width: 72px;
+        padding: 0 6px 0 14px; border-right: 1px solid var(--edge); color: var(--muted); overflow: hidden;
+        transition: background-color .12s, color .12s, width .18s ease, min-width .18s ease, padding .18s ease, opacity .14s ease;
+      }
+      /* The first tab's left edge, where it meets the strip. */
+      .tab.first { border-left: 1px solid var(--edge); }
+      /* A tab grows in as it opens and folds away as it closes, so the others slide over. */
+      .tab.entering, .tab.leaving { width: 0; min-width: 0; padding-left: 0; padding-right: 0; opacity: 0; border-color: transparent; }
+      .tab.leaving { pointer-events: none; }
+      @media (prefers-reduced-motion: reduce) { .tab { transition: background-color .12s, color .12s; } }
+      .tab:hover { background: var(--hover); color: var(--ink); }
+      .tab.active { --ink: var(--active-ink); --muted: var(--active-muted); --hover: var(--active-hover); background: var(--active); color: var(--ink); }
+      .tab .title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; line-height: 1.3; }
+      .tab .close {
+        display: grid; place-items: center; flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px;
+        background: transparent; color: var(--muted); visibility: hidden;
+      }
+      .tab:hover .close { visibility: visible; }
+      .tab .close:hover { background: var(--hover); color: var(--ink); }
+      .tab .close svg { width: 10px; height: 10px; }
+      /* The home page's tab: always there, first, and never closed. */
+      .tab.home .close { display: none; }
+      #new { margin-left: 6px; }
+      /* Tutor on screen (the desktop companion): at the bar's far right, away from the tabs; filled
+         violet while the tutor is on. */
+      #explain { margin-left: auto; }
+      #explain.on, #explain.on:hover:not(:disabled) { background: var(--button); color: #fff; }
+      body.signin #explain, body.no-tutor #explain { display: none; }
+      /* Signing in: one tab of its own, with nothing to open, close or go back to. */
+      .tab.fixed { width: 150px; padding: 0 12px 0 12px; }
+      .tab.fixed.entering, .tab.fixed.leaving { width: 0; padding-left: 0; padding-right: 0; }
+      .tab .glyph { flex: none; width: 14px; height: 14px; border-radius: 3.5px; }
+      body.signin #new { display: none; }
+      /* The lesson's board (src/main/screenTeach.ts), second after Home: its glyph, a violet dot
+         when something new went up on it while another tab showed, and, while the board is in its
+         own window (away), muted inks and an arrow out where the × goes (the × on hover). */
+      .tab .dot { display: none; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--button); }
+      .tab.has-dot .dot { display: block; }
+      .tab.board .glyph { color: var(--muted); }
+      .tab.board.active .glyph { color: var(--ink); }
+      .tab .out { display: none; flex: none; width: 14px; height: 14px; color: var(--muted); }
+      .tab.away { color: var(--muted); }
+      .tab.away .out { display: grid; }
+      .tab.away:hover .out { display: none; }
+      .tab.away .close { display: none; }
+      .tab.away:hover .close { display: grid; }
+      /* A dialog open in the page: its backdrop, carried over the bar, and no clicks through. */
+      .scrim {
+        position: fixed; inset: 0; z-index: 5; background: var(--scrim, transparent);
+        opacity: 0; pointer-events: none; transition: opacity .15s ease;
+      }
+      body.modal .scrim { opacity: 1; pointer-events: auto; }
+    </style>
+  </head>
+  <body class="hidden">
+    <div class="scrim" aria-hidden="true"></div>
+    <div class="bar">
+      <button class="icon" id="back" type="button" title="Back (⌘[)" aria-label="Back" disabled>
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3 5 8l5 5" /></svg>
+      </button>
+      <div class="tabs" id="tabs" role="tablist" aria-label="Open pages"></div>
+      <button class="icon" id="new" type="button" title="New note (⌘N)" aria-label="New note">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 3v10M3 8h10" /></svg>
+      </button>
+      <!-- Tutor on screen (src/main/companion.ts): turns the tutor on and off, which follows the cursor over any app. -->
+      <button class="icon" id="explain" type="button" title="Turn on the tutor (⌃⌥E)" aria-label="Turn on the tutor">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2.5 7.5 13l1.6-4.4L13.5 7Z" /><path d="M12.5 1.5v2M11.5 2.5h2" /></svg>
+      </button>
+    </div>
+    <script>
+      (function () {
+        var bridge = window.tabbar;
+        if (!bridge) return;
+        var root = document.documentElement;
+        var list = document.getElementById("tabs");
+        var back = document.getElementById("back");
+        back.addEventListener("click", function () { bridge.send("back"); });
+        var CLOSE = '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="m2 2 6 6M8 2 2 8" /></svg>';
+
+        document.getElementById("new").addEventListener("click", function () { bridge.send("new"); });
+        document.getElementById("explain").addEventListener("click", function () { bridge.send("explain"); });
+
+        /* Dark (true), light (false), or null for a colour that is not rgb() or #rrggbb (the
+           board's colour can be either). */
+        function isDark(color) {
+          var hex = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(color || "");
+          var m = hex ? [parseInt(hex[1], 16), parseInt(hex[2], 16), parseInt(hex[3], 16)] : /^rgba?\(/.test(color || "") && color.match(/\d+(\.\d+)?/g);
+          if (!m || m.length < 3) return null;
+          return (0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2]) / 255 < 0.5;
+        }
+
+        /* The strip in the web app's sidebar colour, the active tab in its page's colour, each
+           with inks for its own brightness. */
+        function applyTheme(theme) {
+          if (!theme || !theme.background) return;
+          var dark = isDark(theme.background);
+          root.classList.toggle("dark", Boolean(dark === null ? theme.dark : dark));
+          root.style.setProperty("--bar", theme.background);
+          if (theme.surface) root.style.setProperty("--active", theme.surface);
+          else root.style.removeProperty("--active");
+          var fill = theme.surface ? isDark(theme.surface) : null;
+          root.classList.toggle("active-dark", fill === true);
+          root.classList.toggle("active-light", fill === false);
+        }
+
+        /*
+          The tabs are kept, not redrawn: an update changes only what changed, so a tab
+          under the pointer stays hovered and a click on it is never lost to a redraw.
+          A note's tab is kept by its page; the home page's by "home", since another page
+          can take that role (the last tab closed becomes the home page) and its tab stays put.
+        */
+        var els = new Map();
+        var idOf = function (el) { return Number(el.dataset.id); };
+
+        function closeTab(key) {
+          var el = els.get(key);
+          if (!el || el.classList.contains("home")) return;
+          fold(el, key);
+          bridge.send("close", idOf(el));
+        }
+
+        function fold(el, key) {
+          els.delete(key);
+          el.classList.add("leaving");
+          setTimeout(function () { el.remove(); }, 200);
+        }
+
+        var BOARD_GLYPH = '<svg class="glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><rect x="1.5" y="2" width="13" height="9" rx="1.5"/><path d="M4.5 5.5h7M4.5 8h4M6 11l-1.5 3.5M10 11l1.5 3.5"/></svg>';
+        var OUT = '<svg class="out" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h4v4M13 3 7.5 8.5M11 9.5V13H3V5h3.5"/></svg>';
+
+        function makeTab(key) {
+          var el = document.createElement("div");
+          el.className = "tab entering";
+          el.setAttribute("role", "tab");
+          var title = document.createElement("span");
+          title.className = "title";
+          var close = document.createElement("button");
+          close.className = "close";
+          close.type = "button";
+          close.innerHTML = CLOSE;
+          // Closing is its own gesture: it must not select the tab on its way out.
+          close.addEventListener("mousedown", function (e) { e.stopPropagation(); });
+          close.addEventListener("click", function (e) { e.stopPropagation(); closeTab(key); });
+          el.addEventListener("mousedown", function (e) {
+            if (e.button !== 0) return;
+            // (the board away in its own window is brought here, not shown at once)
+            if (!el.classList.contains("away")) els.forEach(function (other) { other.classList.toggle("active", other === el); });
+            bridge.send("select", idOf(el));
+          });
+          el.addEventListener("auxclick", function (e) { if (e.button === 1) closeTab(key); });
+          if (key === "board") el.insertAdjacentHTML("beforeend", BOARD_GLYPH);
+          el.appendChild(title);
+          if (key === "board") {
+            var dot = document.createElement("span");
+            dot.className = "dot";
+            dot.setAttribute("aria-hidden", "true");
+            el.appendChild(dot);
+            el.insertAdjacentHTML("beforeend", OUT);
+          }
+          el.appendChild(close);
+          requestAnimationFrame(function () { requestAnimationFrame(function () { el.classList.remove("entering"); }); });
+          return el;
+        }
+
+        /* While signing in the bar holds one tab, the sign-in screen, and nothing else. */
+        var GLYPH = '<svg class="glyph" viewBox="0 0 512 512" aria-hidden="true"><rect width="512" height="512" rx="116" fill="#1E1E1E"/><path fill="#FFFFFF" d="M136 116a26 26 0 0 1 26-26h136l78 78v228a26 26 0 0 1-26 26H162a26 26 0 0 1-26-26V116Z"/><g fill="#1E1E1E"><rect x="176" y="212" width="160" height="22" rx="11"/><rect x="176" y="264" width="160" height="22" rx="11"/><rect x="176" y="316" width="98" height="22" rx="11"/></g></svg>';
+        var signInTab = null;
+        function drawSignIn(on) {
+          document.body.classList.toggle("signin", on);
+          if (on && !signInTab) {
+            signInTab = document.createElement("div");
+            signInTab.className = "tab fixed active entering";
+            signInTab.setAttribute("role", "tab");
+            signInTab.setAttribute("aria-selected", "true");
+            signInTab.innerHTML = GLYPH + '<span class="title">Sign in</span>';
+            list.insertBefore(signInTab, list.firstChild);
+            var entering = signInTab;
+            requestAnimationFrame(function () { requestAnimationFrame(function () { entering.classList.remove("entering"); }); });
+          } else if (!on && signInTab) {
+            var leaving = signInTab;
+            signInTab = null;
+            leaving.classList.add("leaving");
+            setTimeout(function () { leaving.remove(); }, 200);
+          }
+        }
+
+        function draw(state) {
+          drawSignIn(Boolean(state.signIn));
+          document.body.classList.toggle("hidden", !state.visible);
+          root.style.setProperty("--lights", (state.inset || 8) + "px");
+          root.style.setProperty("--captions", (state.insetRight || 8) + "px");
+          document.body.classList.toggle("no-tutor", state.tutor === false);
+          applyTheme(state.theme);
+          back.disabled = !state.canGoBack;
+          var tutor = document.getElementById("explain");
+          var tutorOn = state.companion === "on";
+          tutor.classList.toggle("on", tutorOn);
+          // (its label says what a press does; no aria-pressed beside it)
+          tutor.title = tutorOn ? "Turn off the tutor (⌃⌥E)" : "Turn on the tutor (⌃⌥E)";
+          tutor.setAttribute("aria-label", tutorOn ? "Turn off the tutor" : "Turn on the tutor");
+          document.body.classList.toggle("modal", Boolean(state.scrim));
+          if (state.scrim) root.style.setProperty("--scrim", state.scrim);
+
+          var wanted = new Set();
+          var previous = null;
+          state.tabs.forEach(function (tab) {
+            var key = tab.board ? "board" : tab.home ? "home" : tab.id;
+            wanted.add(key);
+            var el = els.get(key);
+            if (!el) {
+              el = makeTab(key);
+              els.set(key, el);
+            }
+            el.dataset.id = String(tab.id);
+            el.classList.toggle("home", Boolean(tab.home));
+            el.classList.toggle("board", Boolean(tab.board));
+            el.classList.toggle("away", Boolean(tab.away));
+            el.classList.toggle("has-dot", Boolean(tab.dot));
+            el.classList.toggle("active", tab.active);
+            el.setAttribute("aria-selected", String(tab.active));
+            var tip = tab.away ? "The board is in its own window. Click to show it here (⌥⌘B)" : tab.title;
+            if (el.title !== tip) el.title = tip;
+            var label = tab.away ? tab.title + ", in its own window" : tab.dot ? tab.title + ", something new on it" : tab.title;
+            if (el.getAttribute("aria-label") !== label) el.setAttribute("aria-label", label);
+            var name = el.querySelector(".title");
+            if (name.textContent !== tab.title) {
+              name.textContent = tab.title;
+              el.querySelector(".close").setAttribute("aria-label", "Close " + tab.title);
+            }
+            // In order, moving a tab only when it is out of place.
+            var at = previous ? previous.nextSibling : signInTab ? signInTab.nextSibling : list.firstChild;
+            while (at && at.classList.contains("leaving")) at = at.nextSibling;
+            if (at !== el) list.insertBefore(el, at);
+            previous = el;
+          });
+          els.forEach(function (el, key) { if (!wanted.has(key)) fold(el, key); });
+          // The first tab still there carries the strip's left hairline.
+          var first = true;
+          Array.prototype.forEach.call(list.children, function (el) {
+            var leaving = el.classList.contains("leaving");
+            el.classList.toggle("first", first && !leaving);
+            if (!leaving) first = false;
+          });
+        }
+
+        bridge.onState(draw);
+      })();
+    </script>
+  </body>
+</html>

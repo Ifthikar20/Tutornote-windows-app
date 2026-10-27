@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Tutornote pointer</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+    <style>
+      /*
+        "Explain on screen"'s see-through layer over one display (src/main/explain.ts). It
+        lets every click through, except while picking: then it takes one click, shows a
+        crosshair and a faint purple wash so it is plain the next click is for the tutor.
+        After the click it says it is reading, until the lesson (src/main/screenTeach.ts)
+        is on screen with its own pointer.
+      */
+      :root { --brand: #7232e0; --brand-wash: rgba(114, 50, 224, .05); }
+      html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; font: 500 13px -apple-system, BlinkMacSystemFont, "Inter", sans-serif; }
+      body.pick { background: var(--brand-wash); cursor: crosshair; }
+      .hint {
+        position: fixed; left: 50%; top: 56px; transform: translateX(-50%); padding: 9px 16px; border-radius: 999px;
+        background: #1e1e1e; color: #fff; box-shadow: 0 8px 24px rgba(0, 0, 0, .18); white-space: nowrap; display: none;
+      }
+      .hint b { color: #c4b5fd; font-weight: 600; }
+      body.pick .hint { display: block; }
+      .reading {
+        position: fixed; display: none; padding: 6px 12px; border-radius: 999px; background: var(--brand); color: #fff;
+        box-shadow: 0 6px 18px rgba(114, 50, 224, .35); transform: translate(12px, 12px);
+      }
+      .reading.on { display: block; animation: pulse 1s ease-in-out infinite; }
+      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .7; } }
+      @media (prefers-reduced-motion: reduce) { .reading.on { animation: none; } }
+    </style>
+  </head>
+  <body>
+    <div class="hint">Click the paragraph you want explained. <b>Esc</b> to cancel.</div>
+    <div class="reading" id="reading">Reading…</div>
+    <script>
+      (function () {
+        var bridge = window.screenOverlay;
+        if (!bridge) return;
+        var reading = document.getElementById("reading");
+
+        function clear() {
+          document.body.classList.remove("pick");
+          reading.classList.remove("on");
+        }
+
+        bridge.onState(function (state) {
+          clear();
+          if (!state) return;
+          if (state.mode === "pick") document.body.classList.add("pick");
+          else if (state.mode === "reading") {
+            reading.style.left = state.at.x + "px";
+            reading.style.top = state.at.y + "px";
+            reading.classList.add("on");
+          }
+        });
+
+        document.addEventListener("mousedown", function (e) {
+          if (!document.body.classList.contains("pick") || e.button !== 0) return;
+          e.preventDefault();
+          bridge.pick(e.clientX, e.clientY);
+        });
+        document.addEventListener("keydown", function (e) {
+          if (e.key === "Escape") bridge.cancel();
+        });
+      })();
+    </script>
+  </body>
+</html>

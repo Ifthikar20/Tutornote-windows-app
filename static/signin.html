@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sign in to Tutornote</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'unsafe-inline'; img-src data: file: https:; media-src file: http: https:" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap" />
+    <style>
+      /*
+        The sign-in screen, as the web app's own sign-in page draws it (tutornote.ai/auth: the web
+        repo's AuthPage.tsx, AuthLayout.tsx and CardDeck.tsx, the .lp tokens in index.css). White
+        from edge to edge, a split screen: on the left the logo and the form in one column, with
+        autumn leaves falling either side of it; on the right the deck of cards lying one behind
+        the other, each a picture or a clip, shuffled a card every three seconds and on a click.
+        What differs from the website: no "Back to home" (the app has no home page before signing
+        in), Google and Apple both go through the browser (as the web page does in the app), and
+        the sign-in itself goes through the app (signin.ts). Always light; still for reduced motion.
+      */
+      :root {
+        color-scheme: light;
+        --ink: #000000; --on-ink: #ffffff; --muted: #474747; --muted-2: #5c5c5c; --cream-alt: #f5f3ee;
+        --hair: rgba(0, 0, 0, .1); --danger: #a13a31; --danger-line: rgba(194, 72, 61, .3); --danger-bg: rgba(194, 72, 61, .06);
+        --serif: "Instrument Serif", Georgia, "Times New Roman", serif;
+        --ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --ease: cubic-bezier(.22, 1, .36, 1);
+        --leaf-1: #f5a623; --leaf-2: #ec6a3c; --leaf-3: #e6be2e; --leaf-4: #86c25a;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        overflow: hidden; background: #ffffff; color: var(--ink);
+        font-family: var(--ui); font-size: 16px; font-weight: 500; line-height: 1.4; -webkit-font-smoothing: antialiased;
+      }
+      button, input { font: inherit; }
+      .split { display: grid; grid-template-columns: 1fr 1fr; height: 100%; }
+
+      /* ---------- the left half: the form ---------- */
+      .auth { position: relative; display: flex; flex-direction: column; min-width: 0; overflow: hidden auto; padding: 0 40px; }
+      .form-col { position: relative; z-index: 2; width: 100%; max-width: 27rem; margin: auto; padding: 40px 0 24px; animation: rise .6s var(--ease) both; }
+      .logo { display: block; width: 44px; height: 44px; margin: 0 0 28px; }
+      h1 { margin: 0; font-family: var(--serif); font-weight: 400; font-size: 48px; line-height: 1.08; letter-spacing: 0; }
+      .beta { margin: 16px 0 0; font-size: 14px; color: var(--muted); }
+      .social { display: flex; gap: 12px; margin-top: 24px; }
+      .pill {
+        display: flex; flex: 1; align-items: center; justify-content: center; gap: 8px; height: 48px; padding: 0 18px;
+        border: 0; border-radius: 999px; background: var(--cream-alt); color: var(--ink); font-size: 15px; font-weight: 500;
+        cursor: default; transition: background-color .2s ease, opacity .2s ease;
+      }
+      .pill:hover:not(:disabled) { background: rgba(0, 0, 0, .06); }
+      .pill:disabled { opacity: .5; }
+      .pill svg { width: 16px; height: 16px; flex: none; }
+      .note { margin: 12px 0 0; font-size: 12px; line-height: 1.45; color: var(--muted-2); }
+      .or { display: flex; align-items: center; gap: 12px; margin: 24px 0; font-size: 12px; color: var(--muted-2); }
+      .or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--hair); }
+      .alert { margin: 0 0 16px; padding: 8px 12px; border-radius: 8px; font-size: 13px; line-height: 1.45; }
+      .alert[hidden] { display: none; }
+      .alert.error { border: 1px solid var(--danger-line); background: var(--danger-bg); color: var(--danger); }
+      .alert.notice { border: 1px solid var(--hair); background: var(--cream-alt); color: var(--muted); }
+      .hint { margin: -8px 0 16px; font-size: 12px; line-height: 1.45; color: var(--muted-2); }
+      .hint[hidden] { display: none; }
+      form > * + * { margin-top: 16px; }
+      label { display: block; margin: 0 0 6px; font-size: 14px; font-weight: 600; color: var(--ink); }
+      .box { position: relative; }
+      .box .icon { position: absolute; left: 14px; top: 50%; width: 16px; height: 16px; transform: translateY(-50%); pointer-events: none; color: var(--muted-2); }
+      .field {
+        display: block; width: 100%; height: 48px; padding: 0 40px; border-radius: 8px; border: 1px solid var(--hair);
+        background: #fff; color: var(--ink); font-size: 15px; font-weight: 500; outline: none; transition: border-color .15s ease, opacity .3s ease;
+      }
+      .field::placeholder { color: var(--muted-2); opacity: .7; }
+      .field:focus { border-color: var(--ink); }
+      .eye { position: absolute; right: 14px; top: 50%; display: flex; padding: 0; border: 0; background: none; color: var(--muted-2); transform: translateY(-50%); cursor: default; transition: opacity .2s ease; }
+      .eye:hover { opacity: .7; }
+      .eye svg { width: 16px; height: 16px; }
+      .eye .shut { display: none; }
+      .eye[aria-pressed="true"] .open { display: none; }
+      .eye[aria-pressed="true"] .shut { display: block; }
+      .submit {
+        display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; height: 48px; border: 0; border-radius: 999px;
+        background: var(--ink); color: var(--on-ink); font-size: 15px; font-weight: 600; cursor: default; transition: opacity .2s ease, transform .2s var(--ease);
+      }
+      .submit:hover:not(:disabled) { opacity: .85; }
+      .submit:active:not(:disabled) { transform: translateY(1px); }
+      .submit:disabled { opacity: .6; }
+      .submit .spin { display: none; width: 16px; height: 16px; border-radius: 50%; border: 2px solid currentColor; border-top-color: transparent; animation: spin .8s linear infinite; }
+      .submit.busy .spin { display: block; }
+      .terms { margin: 16px 0 0; font-size: 12px; line-height: 1.5; color: var(--muted-2); }
+      .terms a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+      .more { margin-top: 24px; font-size: 14px; color: var(--muted-2); }
+      .more p { margin: 0; }
+      .more p + p { margin-top: 6px; }
+      .more a, .more .link { padding: 0; border: 0; background: none; color: var(--ink); font-size: inherit; font-weight: 500; text-decoration: underline; text-underline-offset: 2px; cursor: default; }
+      .waiting { display: none; }
+      body.is-waiting .choices { display: none; }
+      body.is-waiting .waiting { display: block; }
+      .spinner { width: 22px; height: 22px; margin: 28px 0 16px; border-radius: 50%; border: 2.5px solid var(--hair); border-top-color: var(--ink); animation: spin .9s linear infinite; }
+      .waiting p { margin: 0 0 14px; font-size: 14px; line-height: 1.5; color: var(--muted); }
+      .waiting .link { margin-right: 14px; padding: 0; border: 0; background: none; color: var(--ink); font-size: 14px; font-weight: 500; text-decoration: underline; text-underline-offset: 2px; cursor: default; }
+      .server { position: relative; z-index: 2; margin: 0; padding: 0 0 14px; text-align: center; color: var(--muted-2); font-size: 12px; font-weight: 400; }
+      .form-col.shake { animation: shake-form .4s; }
+      body.sending .field, body.sending label { opacity: .5; }
+
+      /* Autumn leaves fall in the left half, either side of the form (dealLeaves below). */
+      .leaves { position: absolute; inset: 0; z-index: 1; pointer-events: none; overflow: hidden; }
+      .leaf { position: absolute; top: 0; left: var(--x); width: var(--size); height: var(--size); pointer-events: auto; animation: fall var(--dur) linear var(--delay) infinite; }
+      .leaf .sway { width: 100%; height: 100%; animation: sway var(--sway-dur) ease-in-out infinite alternate; }
+      .leaf svg { display: block; width: 100%; height: 100%; }
+      .leaf:hover svg { animation: flutter .7s ease; }
+      .l-body { stroke: rgba(0, 0, 0, .12); stroke-width: 1; }
+      .l-vein { fill: none; stroke: rgba(0, 0, 0, .18); stroke-width: 1; stroke-linecap: round; }
+      .c0 .l-body { fill: var(--leaf-1); } .c1 .l-body { fill: var(--leaf-2); } .c2 .l-body { fill: var(--leaf-3); } .c3 .l-body { fill: var(--leaf-4); }
+
+      /* ---------- the right half: the deck (the web's CardDeck, its .an-deck styles) ---------- */
+      .side { display: flex; align-items: center; justify-content: center; min-width: 0; overflow: hidden; padding: 40px; }
+      .deck {
+        position: relative; display: block; width: min(100%, 27.5rem, calc((100vh - 9rem) * .8)); aspect-ratio: 4 / 5;
+        padding: 0; border: 0; border-radius: 28px; background: transparent; cursor: pointer; animation: deck-in .8s var(--ease) .1s both;
+      }
+      .deck:focus-visible { outline: none; }
+      .card {
+        position: absolute; inset: 0; display: block; border-radius: 28px;
+        box-shadow: 0 24px 60px rgba(16, 18, 22, .16), 0 2px 8px rgba(16, 18, 22, .06);
+        transform: translate(calc(var(--x, 0) * 1px), calc(var(--y, 0) * 1px + var(--lift, 0px))) rotate(calc(var(--r, 0) * 1deg + var(--lean, 0deg))) scale(var(--s, 1));
+        transition: transform .55s var(--ease), opacity .55s var(--ease);
+      }
+      .deck:hover .card[data-top], .deck:focus-visible .card[data-top] { --lift: -8px; --lean: -1deg; }
+      .card[data-out] { transform: translate(120%, -6%) rotate(18deg); opacity: 0; }
+      .card[data-hidden] { opacity: 0; }
+      .face { position: absolute; inset: 0; display: block; overflow: hidden; isolation: isolate; border-radius: inherit; clip-path: inset(0 round 28px); background: #1c1b22; }
+      .face > * { transition: transform .7s var(--ease); }
+      .deck:hover .card[data-top] .face > * { transform: scale(1.05); }
+      .media { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; -webkit-user-drag: none; user-select: none; }
+
+      @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+      @keyframes deck-in { from { opacity: 0; transform: translateY(16px) scale(.98); } }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      @keyframes shake-form { 10%, 90% { transform: translateX(-1px); } 20%, 80% { transform: translateX(2px); } 30%, 50%, 70% { transform: translateX(-4px); } 40%, 60% { transform: translateX(4px); } }
+      @keyframes fall { 0% { transform: translate3d(0, -40px, 0) rotate(0deg); opacity: 0; } 8%, 90% { opacity: .95; } 100% { transform: translate3d(var(--drift), calc(100vh + 40px), 0) rotate(var(--spin)); opacity: 0; } }
+      @keyframes sway { from { transform: translateX(calc(var(--sway) * -1)) rotate(-24deg); } to { transform: translateX(var(--sway)) rotate(24deg); } }
+      @keyframes flutter { 0% { transform: none; } 50% { transform: rotateY(180deg) scale(1.15); } 100% { transform: rotateY(360deg); } }
+
+      /* A short window: the same page, closer together. */
+      @media (max-height: 880px) {
+        .form-col { padding: 24px 0 16px; } .logo { width: 38px; height: 38px; margin-bottom: 18px; }
+        h1 { font-size: 40px; } .beta { margin-top: 10px; } .social { margin-top: 18px; } .or { margin: 16px 0; }
+        .pill, .field, .submit { height: 44px; } form > * + * { margin-top: 12px; } .more { margin-top: 16px; }
+      }
+      @media (max-height: 700px) {
+        .note, .beta { display: none; } .form-col { padding: 16px 0 12px; } .logo { width: 34px; height: 34px; margin-bottom: 14px; }
+        h1 { font-size: 32px; } .social { margin-top: 14px; } .or { margin: 12px 0; }
+        .pill, .field, .submit { height: 40px; } form > * + * { margin-top: 10px; } .terms { margin-top: 12px; } .more { margin-top: 12px; }
+      }
+      @media (max-width: 980px) { .auth { padding: 0 28px; } .side { padding: 28px; } }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation: none !important; transition: none !important; }
+        .leaves { display: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="split">
+      <section class="auth" id="auth">
+        <div class="leaves" id="leaves" aria-hidden="true"></div>
+
+        <main class="form-col" id="form-col">
+          <svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" aria-hidden="true">
+            <rect width="512" height="512" rx="116" fill="#1E1E1E"/>
+            <path fill="#FFFFFF" d="M136 116a26 26 0 0 1 26-26h136l78 78v228a26 26 0 0 1-26 26H162a26 26 0 0 1-26-26V116Z"/>
+            <path fill="#FFFFFF" fill-opacity="0.45" d="M298 90l78 78h-60a18 18 0 0 1-18-18V90Z"/>
+            <g fill="#1E1E1E">
+              <rect x="176" y="212" width="160" height="22" rx="11"/>
+              <rect x="176" y="264" width="160" height="22" rx="11"/>
+              <rect x="176" y="316" width="98" height="22" rx="11"/>
+            </g>
+          </svg>
+          <h1>Welcome back to <br />Tutornote</h1>
+          <p class="beta">Tutornote is currently in beta.</p>
+
+          <div class="choices">
+            <div class="social">
+              <button class="pill" id="google" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                  <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+                </svg>
+                Google
+              </button>
+              <button class="pill" id="apple" type="button">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09l.01-.01zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z" /></svg>
+                Apple
+              </button>
+            </div>
+            <p class="note">Google and Apple sign-in open in your browser, where you're probably signed in already. You'll come straight back here.</p>
+
+            <div class="or">or</div>
+
+            <p class="alert error" id="error" role="alert" hidden></p>
+            <p class="hint" id="no-account" hidden>No account yet? Open the invite link in your welcome email, or <a href="#" class="waitlist">join the waitlist</a>.</p>
+            <p class="alert notice" id="notice" role="status" hidden></p>
+
+            <form id="form-email" aria-label="Sign in with your email" novalidate>
+              <div>
+                <label for="email">Your email</label>
+                <div class="box">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7" /><rect x="2" y="4" width="20" height="16" rx="2" /></svg>
+                  <input class="field" id="email" name="email" type="email" autocomplete="email" placeholder="Enter your email" spellcheck="false" required />
+                </div>
+              </div>
+              <div>
+                <label for="password">Your password</label>
+                <div class="box">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
+                  <input class="field" id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required />
+                  <button class="eye" id="eye" type="button" aria-label="Show password" aria-pressed="false">
+                    <svg class="open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" /><circle cx="12" cy="12" r="3" /></svg>
+                    <svg class="shut" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49" /><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242" /><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143" /><path d="m2 2 20 20" /></svg>
+                  </button>
+                </div>
+              </div>
+              <button class="submit" id="submit" type="submit"><span class="spin"></span><span class="label">Login</span></button>
+            </form>
+
+            <p class="terms">
+              By logging in, you agree to our <a id="terms" href="#">Terms of Service</a> and <a id="privacy" href="#">Privacy Policy</a>
+            </p>
+            <div class="more">
+              <p>New here? <a href="#" class="waitlist">Join the waitlist</a></p>
+              <p>Forgot your password? <button class="link" id="reset" type="button">Reset password</button></p>
+            </div>
+          </div>
+
+          <div class="waiting">
+            <div class="spinner"></div>
+            <p>Finish signing in in your browser.<br />This window continues on its own.</p>
+            <button class="link" id="again" type="button">Open the browser again</button>
+            <button class="link" id="cancel" type="button">Cancel</button>
+          </div>
+        </main>
+        <p class="server" id="server"></p>
+      </section>
+
+      <aside class="side">
+        <button class="deck" id="deck" type="button" aria-label="Show the next card"></button>
+      </aside>
+    </div>
+
+    <script>
+      (function () {
+        var bridge = window.anothernotes && window.anothernotes.auth;
+        var body = document.body;
+        var formCol = document.getElementById("form-col");
+        var auth = document.getElementById("auth");
+        var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        var query = new URLSearchParams(location.search);
+        var SITE = /^https?:\/\//.test(query.get("site") || "") ? query.get("site").replace(/\/+$/, "") : "https://tutornote.ai";
+        if (query.get("server")) document.getElementById("server").textContent = "Connected to " + query.get("server");
+
+        function restart(el, name) {
+          el.classList.remove(name);
+          void el.offsetWidth;
+          el.classList.add(name);
+        }
+
+        /* The website's pages open in the browser: the terms, the privacy policy, the waitlist. */
+        function site(path) { return function (e) { e.preventDefault(); window.open(SITE + path); }; }
+        document.getElementById("terms").addEventListener("click", site("/terms"));
+        document.getElementById("privacy").addEventListener("click", site("/privacy"));
+        document.querySelectorAll(".waitlist").forEach(function (a) { a.addEventListener("click", site("/waitlist")); });
+
+        /* The notes above the form, as the web page has them. */
+        var errorBox = document.getElementById("error"), noAccount = document.getElementById("no-account"), noticeBox = document.getElementById("notice");
+        /* A failed sign-in also says how someone with no account gets in (the web page's line). */
+        function showError(text, failed) {
+          errorBox.textContent = text;
+          errorBox.hidden = !text;
+          noAccount.hidden = !(text && failed);
+          if (text) noticeBox.hidden = true;
+        }
+        function showNotice(text) {
+          noticeBox.textContent = text;
+          noticeBox.hidden = !text;
+          if (text) { errorBox.hidden = true; noAccount.hidden = true; }
+        }
+        document.getElementById("reset").addEventListener("click", function () {
+          showNotice("Password reset is coming soon. Contact support to regain access.");
+        });
+
+        /* The password shown or hidden, as the web page's eye does. */
+        var eye = document.getElementById("eye"), password = document.getElementById("password");
+        eye.addEventListener("click", function () {
+          var show = password.type === "password";
+          password.type = show ? "text" : "password";
+          eye.setAttribute("aria-pressed", String(show));
+          eye.setAttribute("aria-label", show ? "Hide password" : "Show password");
+        });
+
+        /* ---------- the deck (the web's CardDeck and deckCards.ts) ---------- */
+
+        /* Top card first. Its files are the web app's, built into the app (renderer/), else the website's. */
+        var DECK = [
+          { label: "A study desk", src: "why-desk.mp4", poster: "auth-deck/why-desk.jpg", focus: "68% 50%" },
+          { label: "A page of handwritten formulas", src: "auth-deck/formulas.jpg" },
+          { label: "Reading by a train window", src: "auth-deck/train-window.jpg" },
+          { label: "A wall of sticky notes", src: "auth-deck/sticky-wall.jpg" },
+          { label: "Library shelves", src: "why-shelves.mp4", poster: "auth-deck/why-shelves.jpg", focus: "50% 40%" },
+          { label: "Homework at the kitchen table", src: "auth-deck/kitchen-table.jpg" }
+        ];
+        /* Where a card rests for its place in the pile, top first: offset (px), tilt (deg) and size. */
+        var PILE = [
+          { x: 0, y: 0, r: 0, s: 1 },
+          { x: -18, y: 16, r: -6, s: 0.97 },
+          { x: 16, y: 26, r: 5, s: 0.94 },
+          { x: -2, y: 34, r: -2, s: 0.92 },
+          { x: 12, y: 40, r: 3, s: 0.9 }
+        ];
+        var THROW_MS = 460, SETTLE_MS = 120, EVERY_MS = 3000;
+        var deck = document.getElementById("deck");
+        var order = DECK.map(function (_, i) { return i; });
+        var busy = false, held = false, timer = 0;
+
+        /* A file of the bundle, else the website's copy of it; a card with neither stays dark. */
+        function load(el, attr, path) {
+          var tries = ["../renderer/" + path, SITE + "/" + path], i = 0;
+          el.addEventListener("error", function () { if (i < tries.length) el.setAttribute(attr, tries[i++]); });
+          el.setAttribute(attr, tries[i++]);
+        }
+        var cards = DECK.map(function (card) {
+          var outer = document.createElement("span");
+          outer.className = "card";
+          outer.setAttribute("aria-hidden", "true");
+          var face = document.createElement("span");
+          face.className = "face";
+          var media;
+          if (/\.(mp4|webm)$/.test(card.src)) {
+            media = document.createElement("video");
+            media.muted = true; media.loop = true; media.playsInline = true; media.preload = "metadata";
+            var poster = new Image();
+            poster.onload = function () { media.poster = poster.src; };
+            load(poster, "src", card.poster);
+            load(media, "src", card.src);
+          } else {
+            media = document.createElement("img");
+            media.alt = ""; media.decoding = "async"; media.draggable = false;
+            load(media, "src", card.src);
+          }
+          media.className = "media";
+          if (card.focus) media.style.objectPosition = card.focus;
+          face.appendChild(media);
+          outer.appendChild(face);
+          deck.appendChild(outer);
+          return { el: outer, media: media };
+        });
+
+        function place(out) {
+          cards.forEach(function (card, i) {
+            var pos = order.indexOf(i), spot = PILE[Math.min(pos, PILE.length - 1)], isOut = out === i;
+            card.el.style.setProperty("--x", spot.x);
+            card.el.style.setProperty("--y", spot.y);
+            card.el.style.setProperty("--r", spot.r);
+            card.el.style.setProperty("--s", spot.s);
+            card.el.style.zIndex = isOut ? DECK.length + 1 : DECK.length - pos;
+            card.el.toggleAttribute("data-top", pos === 0 && !isOut);
+            card.el.toggleAttribute("data-out", isOut);
+            card.el.toggleAttribute("data-hidden", pos >= PILE.length);
+            /* Only the top card's clip plays. */
+            if (card.media.tagName === "VIDEO") {
+              if (pos === 0 && !isOut && !reduce) { var p = card.media.play(); if (p && p.catch) p.catch(function () {}); }
+              else card.media.pause();
+            }
+          });
+          deck.setAttribute("aria-label", DECK[order[0]].label + ". Show the next card");
+        }
+
+        /* The top card is thrown off to the right and comes back in at the bottom of the pile. */
+        function shuffle() {
+          if (busy) return;
+          var next = order.slice(1).concat(order[0]);
+          if (reduce) { order = next; place(); return; }
+          busy = true;
+          place(order[0]);
+          setTimeout(function () {
+            order = next;
+            place();
+            setTimeout(function () { busy = false; }, SETTLE_MS);
+          }, THROW_MS);
+          schedule();
+        }
+        /* By itself, a card every three seconds, held while the pointer or the keyboard is on the deck. */
+        function schedule() {
+          clearTimeout(timer);
+          if (reduce || held) return;
+          timer = setTimeout(function () { if (document.hidden || busy) schedule(); else shuffle(); }, EVERY_MS);
+        }
+        deck.addEventListener("click", shuffle);
+        deck.addEventListener("pointerenter", function () { held = true; clearTimeout(timer); });
+        deck.addEventListener("pointerleave", function () { held = false; schedule(); });
+        deck.addEventListener("focus", function () { held = true; clearTimeout(timer); });
+        deck.addEventListener("blur", function () { held = false; schedule(); });
+        place();
+        schedule();
+
+        /* ---------- autumn leaves, either side of the form, in the left half ---------- */
+
+        var LEAVES = [
+          '<svg viewBox="0 0 32 32"><path class="l-body" d="M16 2 C26 8 28 20 16 30 C4 20 6 8 16 2 Z" /><path class="l-vein" d="M16 5 V29 M16 12 L21 9 M16 17 L22 14 M16 22 L21 19 M16 12 L11 9 M16 17 L10 14 M16 22 L11 19" /></svg>',
+          '<svg viewBox="0 0 32 32"><path class="l-body" d="M16 3 C23 5 29 12 27 20 C25 27 19 30 16 30 C13 30 7 27 5 20 C3 12 9 5 16 3 Z" /><path class="l-vein" d="M16 6 V29 M16 13 L21 10 M16 19 L22 16 M16 13 L11 10 M16 19 L10 16" /></svg>'
+        ];
+        function dealLeaves() {
+          var box = document.getElementById("leaves");
+          box.textContent = "";
+          var W = auth.clientWidth, side = (W - formCol.offsetWidth) / 2;
+          if (side < 30) return;
+          for (var i = 0; i < 8; i++) {
+            var left = i % 2 === 0;
+            var x = left ? 4 + Math.random() * Math.max(0, side - 30) : W - side + 8 + Math.random() * Math.max(0, side - 30);
+            var dur = 12 + Math.random() * 9;
+            var leaf = document.createElement("div");
+            leaf.className = "leaf";
+            leaf.style.cssText =
+              "--x:" + x.toFixed(0) + "px;--size:" + (14 + Math.random() * 12).toFixed(0) + "px;" +
+              "--dur:" + dur.toFixed(1) + "s;--delay:" + (-Math.random() * dur).toFixed(1) + "s;" +
+              "--drift:" + ((left ? -1 : 1) * (6 + Math.random() * 30)).toFixed(0) + "px;--spin:" + (180 + Math.random() * 400).toFixed(0) + "deg";
+            var sway = document.createElement("div");
+            sway.className = "sway";
+            sway.style.cssText = "--sway:" + (6 + Math.random() * 10).toFixed(0) + "px;--sway-dur:" + (2.4 + Math.random() * 2).toFixed(2) + "s";
+            sway.innerHTML = LEAVES[i % 2];
+            sway.firstChild.setAttribute("class", "c" + (i % 4));
+            leaf.appendChild(sway);
+            box.appendChild(leaf);
+          }
+        }
+        var settle = 0;
+        function deal() { if (!reduce) dealLeaves(); }
+        window.addEventListener("resize", function () { clearTimeout(settle); settle = setTimeout(deal, 200); });
+        deal();
+        if (document.fonts && document.fonts.ready) document.fonts.ready.then(deal);
+
+        /* ---------- signing in ---------- */
+
+        var store = {
+          get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+          set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+        };
+
+        var form = document.getElementById("form-email");
+        var email = document.getElementById("email");
+        email.value = store.get("signin.email") || "";
+        (email.value ? password : email).focus();
+
+        if (!bridge || !bridge.signIn) {
+          document.querySelectorAll("form button, form input, .pill").forEach(function (el) { el.disabled = true; });
+          showNotice("This page only works inside the Tutornote app.");
+          return;
+        }
+
+        function minutes(seconds) {
+          var m = Math.ceil(seconds / 60);
+          return m <= 1 ? "a minute" : m + " minutes";
+        }
+
+        var button = document.getElementById("submit");
+        form.addEventListener("submit", function (e) {
+          e.preventDefault();
+          if (!email.value.trim() || !password.value) {
+            showError("Fill in both fields to sign in.");
+            (email.value.trim() ? password : email).focus();
+            return;
+          }
+          showError("");
+          showNotice("");
+          button.disabled = true;
+          button.classList.add("busy");
+          var address = email.value.trim();
+          store.set("signin.email", address);
+          bridge.signIn({ email: address, password: password.value }).then(function (result) {
+            if (result && result.ok) {
+              button.querySelector(".label").textContent = "Opening your notes…";
+              body.classList.add("sending");
+              return;
+            }
+            var text = (result && result.error) || "Sign-in failed. Try again.";
+            if (result && result.lockedForSeconds) text += " Try again in " + minutes(result.lockedForSeconds) + ".";
+            showError(text, true);
+            button.disabled = false;
+            button.classList.remove("busy");
+            restart(formCol, "shake");
+            password.value = "";
+            password.focus();
+          }, function () {
+            showError("Something went wrong. Try again.");
+            button.disabled = false;
+            button.classList.remove("busy");
+          });
+        });
+
+        function browser() {
+          body.classList.add("is-waiting");
+          bridge.signInWithBrowser();
+        }
+        document.getElementById("google").addEventListener("click", browser);
+        document.getElementById("apple").addEventListener("click", browser);
+        document.getElementById("again").addEventListener("click", browser);
+        document.getElementById("cancel").addEventListener("click", function () {
+          body.classList.remove("is-waiting");
+          bridge.cancelBrowserSignIn();
+        });
+      })();
+    </script>
+  </body>
+</html>

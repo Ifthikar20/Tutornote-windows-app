@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- The window's own name (Electron takes it from here): what VoiceOver and the Dock call it. -->
+    <title>Opening Tutornote…</title>
+    <!-- Nothing but this page: no script, nothing fetched. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; style-src 'unsafe-inline'" />
+    <style>
+      /*
+        The loader: shown only when the app's first page takes longer than a second to load
+        (src/main/windows.ts, launchReveal.ts), and closed the moment the window shows. So it
+        reads from its first frame: the little pixel computer, shaped like Tutornote's folded
+        page, with a smiley on its screen that blinks now and then, and one line under it. Its
+        window fades in over 150 ms, the whole of it, its white and its shadow too
+        (windows.ts fadeInSplash: a page cannot fade its own window), so a loader that is only
+        just needed does not flash. Everything is drawn here; nothing is fetched and nothing
+        runs. Always light. Reduced motion: all of it still (the window's fade, which moves
+        nothing, stays).
+      */
+      :root {
+        color-scheme: light;
+        --paper: #ffffff;
+        --ink: #1e1e1e;
+        /* 5.4:1 on white: readable at 12.5 px (WCAG AA). */
+        --muted: #6e6a62;
+        /* The computer. */
+        --case: #ebe8e1;
+        --case-light: #fbfaf7;
+        --case-shade: #c9c4b9;
+        --case-dark: #a39e93;
+        --bezel: #45474d;
+        --screen: #dfe5ff;
+        --screen-glow: #eef1ff;
+        --glyph: #2f3566;
+        --led-on: #8fd8c6;
+        --led-amber: #f5b301;
+        --base: #2b2a27;
+        --base-light: #5a5853;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+        background: var(--paper);
+        color: var(--ink);
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-app-region: drag;
+      }
+      main {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+      }
+
+      /* ---- The computer ----------------------------------------------------------- */
+      /* Drawn on a 44 x 52 pixel grid, 4 screen pixels each: crisp edges, no smoothing. */
+      .computer { position: relative; width: 176px; height: 208px; }
+      .computer > svg { display: block; width: 100%; height: 100%; shape-rendering: crispEdges; }
+
+      /* The screen: 30 x 20 grid pixels at (7, 10), so 120 x 80 at (28, 40), below the
+         folded corner. */
+      .screen {
+        position: absolute;
+        left: 28px;
+        top: 40px;
+        width: 120px;
+        height: 80px;
+        overflow: hidden;
+        background: radial-gradient(ellipse at 40% 30%, var(--screen-glow), var(--screen) 70%);
+      }
+      /* Scan lines, very faint, over the face. */
+      .screen::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: repeating-linear-gradient(to bottom, rgba(47, 53, 102, 0.05) 0 1px, transparent 1px 3px);
+      }
+      .screen > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+
+      /* ---- The face ----------------------------------------------------------------- */
+      /* Whole pixels on whole pixel centres: crisp, like the computer. */
+      .face { fill: none; stroke: var(--glyph); stroke-linecap: square; }
+      .eye { stroke-width: 6px; }
+      .smile { stroke-width: 5px; }
+      .cheek { fill: #f59ab0; }
+      /* A blink every few seconds, the only thing that moves. */
+      .eyes { transform-box: fill-box; transform-origin: 50% 50%; animation: wink 3.2s ease-in-out 0.6s infinite; }
+      @keyframes wink { 0%, 6%, 100% { transform: none; } 3% { transform: scaleY(0.12); } }
+
+      /* ---- The line ----------------------------------------------------------------- */
+      .sub {
+        margin: 16px 0 0;
+        color: var(--muted);
+        font-size: 12.5px;
+        letter-spacing: 0.01em;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation: none !important; transition: none !important; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="computer" aria-hidden="true">
+        <!-- The computer: a page with its corner folded, like Tutornote's mark. -->
+        <svg viewBox="0 0 44 52">
+          <!-- case: outline, body, folded corner -->
+          <path fill="var(--ink)" d="M3 0 H34 V1 H35 V2 H36 V3 H37 V4 H38 V5 H39 V6 H40 V7 H41 V42 H40 V43 H4 V42 H3 Z" />
+          <path fill="var(--case)" d="M4 1 H33 V2 H34 V3 H35 V4 H36 V5 H37 V6 H38 V7 H39 V8 H40 V42 H4 Z" />
+          <path fill="var(--case-light)" d="M4 1 H33 V2 H5 V41 H4 Z" />
+          <path fill="var(--case-shade)" d="M39 8 H40 V42 H5 V41 H39 Z" />
+          <!-- the fold (rows 1 to 7), clear of the bezel -->
+          <path fill="var(--case-shade)" d="M33 1 H34 V2 H35 V3 H36 V4 H37 V5 H38 V6 H39 V7 H40 V8 H33 Z" />
+          <path fill="var(--case-dark)" d="M33 7 H40 V8 H33 Z M33 1 H34 V8 H33 Z" />
+          <!-- screen bezel, one row below the fold (the glass itself is the .screen element over it) -->
+          <rect fill="var(--case-dark)" x="6" y="9" width="32" height="1" />
+          <rect fill="var(--case-dark)" x="6" y="9" width="1" height="22" />
+          <rect fill="var(--case-light)" x="6" y="30" width="32" height="1" />
+          <rect fill="var(--case-light)" x="37" y="9" width="1" height="22" />
+          <rect fill="var(--bezel)" x="7" y="10" width="30" height="20" />
+          <!-- lights and the disk slot -->
+          <rect fill="var(--led-on)" x="7" y="34" width="2" height="1" />
+          <rect fill="var(--led-amber)" x="7" y="35" width="2" height="1" />
+          <rect fill="var(--ink)" x="23" y="34" width="13" height="1" />
+          <rect fill="var(--case-light)" x="23" y="35" width="13" height="1" />
+          <!-- the stand -->
+          <rect fill="var(--ink)" x="7" y="43" width="30" height="8" />
+          <rect fill="var(--base)" x="8" y="44" width="28" height="6" />
+          <rect fill="var(--base-light)" x="10" y="46" width="6" height="2" />
+          <rect fill="#6f6c66" x="16" y="46" width="5" height="2" />
+          <rect fill="#4a4844" x="21" y="46" width="7" height="2" />
+          <rect fill="#5f5c57" x="28" y="46" width="5" height="2" />
+        </svg>
+        <div class="screen">
+          <!-- The smiley: two eyes, a smile, rosy cheeks. -->
+          <svg viewBox="0 0 120 80">
+            <g class="face">
+              <g class="eyes">
+                <path class="eye" d="M 44 24 V 35" />
+                <path class="eye" d="M 76 24 V 35" />
+              </g>
+              <path class="smile" d="M 40 50 Q 60 66 80 50" />
+            </g>
+            <rect class="cheek" x="27" y="41" width="6" height="3" />
+            <rect class="cheek" x="87" y="41" width="6" height="3" />
+          </svg>
+        </div>
+      </div>
+      <p class="sub" role="status">Opening Tutornote…</p>
+    </main>
+  </body>
+</html>

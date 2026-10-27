@@ -1,0 +1,11 @@
+node_modules/
+dist/
+release/
+*.log
+# The web app's build (scripts/build-renderer.mjs)
+renderer/
+# Native helpers, built from helpers/ (none yet on Windows)
+build/helpers/
+# Never commit settings files
+.env
+.env.*

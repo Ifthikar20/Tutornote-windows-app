@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Tutornote tutor</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+    <style>
+      /*
+        The desktop companion's blob (src/main/companion.ts): a 64 point purple blob with the tutor
+        curled inside, floating over every app and every Space. It shows while the tutor is off
+        (resting, or blocked); a click turns the tutor on (it hops out and follows the cursor) and
+        the blob goes, the lesson page's dock (its pause and ×) being the control while it is on.
+        With a page too old to have that dock, the blob stays as an empty ring with a soft glow,
+        and a click on it turns the tutor off. A drag moves it (the app moves the window, so the
+        click is never lost to a drag region); a right click shows its menu. Over it, its label
+        shows beside it, in the room the app gives the window for it on the side with more space.
+
+        Looks: resting (the tutor inside), on (an empty, glowing ring: as it hops out, as it flies
+        home, and with an older page), reading (the ring turns while a window is being read on this
+        Mac), blocked (a small "!": Screen Recording is off), hidden (the ring fading out as the
+        tutor turns on, before the app hides the window).
+      */
+      :root { --brand: #7232e0; --brand-deep: #5b21b6; --shell: #f4eefe; --ink: #1e1036; }
+      html, body {
+        margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent;
+        font: 500 12px/1.3 -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+        -webkit-user-select: none; user-select: none; cursor: default;
+      }
+      .blob { position: absolute; top: 0; left: 0; width: 64px; height: 64px; touch-action: none; }
+      body.side-left .blob { left: auto; right: 0; }
+      /* (a little inside the window, so its shadow and glow are not cut at the window's edge) */
+      .blob svg {
+        display: block; box-sizing: border-box; width: 64px; height: 64px; padding: 4px; overflow: visible;
+        filter: drop-shadow(0 4px 9px rgba(30, 16, 54, .28));
+        transition: transform .16s ease;
+      }
+      .blob:hover svg { transform: scale(1.05); }
+      body.held .blob svg { transform: scale(.96); }
+      .disc { fill: var(--shell); stroke: var(--brand); stroke-width: 2.5; transition: fill .2s ease, stroke-width .2s ease; }
+      .spin { fill: none; stroke: #c4b5fd; stroke-width: 3; stroke-dasharray: 26 144; stroke-linecap: round; opacity: 0; transform-origin: 32px 32px; }
+      .tutor { transform-origin: 32px 34px; transition: opacity .2s ease, transform .3s cubic-bezier(.2, .9, .3, 1.2); }
+      .alert { opacity: 0; transition: opacity .2s ease; }
+
+      /* On: the tutor has hopped out to the cursor; the blob is an empty ring with a soft glow
+         (hidden: that ring, fading out). */
+      body.on .disc, body.reading .disc, body.hidden .disc { fill: rgba(114, 50, 224, .1); stroke-width: 3; }
+      body.on svg, body.reading svg, body.hidden svg { filter: drop-shadow(0 0 7px rgba(114, 50, 224, .55)) drop-shadow(0 4px 9px rgba(30, 16, 54, .2)); }
+      body.on .tutor, body.reading .tutor, body.hidden .tutor { opacity: 0; transform: scale(.4) translateY(-10px); }
+      /* Reading: the ring turns while a window is read on this Mac. */
+      body.reading .spin { opacity: 1; animation: spin 1s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      /* Blocked: Screen Recording is off. */
+      body.blocked .alert { opacity: 1; }
+      body.hidden .blob { opacity: 0; transition: opacity .12s ease; }
+
+      /* Shown: it pops up. */
+      body.pop .blob svg { animation: pop .32s cubic-bezier(.2, .9, .3, 1.25); }
+      @keyframes pop { from { transform: scale(.5); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+      .label {
+        position: absolute; top: 50%; display: none; max-width: 212px; padding: 7px 11px; border-radius: 10px;
+        background: #1e1e1e; color: #fff; box-shadow: 0 6px 18px rgba(0, 0, 0, .22); transform: translateY(-50%);
+        pointer-events: none;
+      }
+      body.side-left .label { display: block; right: 72px; }
+      body.side-right .label { display: block; left: 72px; }
+
+      @media (prefers-reduced-motion: reduce) {
+        .tutor, .disc, .blob svg { transition: none; }
+        body.reading .spin { animation: none; }
+        body.pop .blob svg { animation: none; }
+      }
+    </style>
+  </head>
+  <body class="resting">
+    <div class="label" id="label">Click to turn me on</div>
+    <div class="blob" id="blob" role="button" aria-label="Click to turn me on">
+      <svg viewBox="0 0 64 64" aria-hidden="true">
+        <defs>
+          <radialGradient id="skin" cx="38%" cy="32%" r="72%">
+            <stop offset="0" stop-color="#a47cf3" />
+            <stop offset="1" stop-color="#7232e0" />
+          </radialGradient>
+        </defs>
+        <circle class="disc" cx="32" cy="32" r="28" />
+        <circle class="spin" cx="32" cy="32" r="28" />
+        <!-- The tutor, curled up inside: a round body, its tail curled round, its face. -->
+        <g class="tutor">
+          <path d="M44.5 47.5c4.6 1.1 8.4-1.6 8-5.6-.4-3.2-4.2-4.3-5.9-1.8" fill="none" stroke="#5b21b6" stroke-width="3.2" stroke-linecap="round" />
+          <path d="M32 13c10.5 0 18.5 8.3 18.5 18.8S42.4 51 32 51 13.5 42.3 13.5 31.8 21.5 13 32 13Z" fill="url(#skin)" />
+          <ellipse cx="25.6" cy="30" rx="4.1" ry="4.9" fill="#fff" />
+          <ellipse cx="38.4" cy="30" rx="4.1" ry="4.9" fill="#fff" />
+          <circle cx="26.4" cy="31" r="2.2" fill="#1e1036" />
+          <circle cx="39.2" cy="31" r="2.2" fill="#1e1036" />
+          <circle cx="21.5" cy="37.5" r="2.4" fill="#f0abfc" opacity=".55" />
+          <circle cx="42.5" cy="37.5" r="2.4" fill="#f0abfc" opacity=".55" />
+          <path d="M27.2 39.2c2.8 2.6 6.8 2.6 9.6 0" fill="none" stroke="#fff" stroke-width="2.3" stroke-linecap="round" />
+        </g>
+        <!-- Blocked: Screen Recording is off. -->
+        <g class="alert">
+          <circle cx="51" cy="13" r="8.5" fill="#f59e0b" stroke="#fff" stroke-width="2" />
+          <rect x="49.7" y="7.8" width="2.6" height="6.8" rx="1.3" fill="#fff" />
+          <circle cx="51" cy="17.6" r="1.5" fill="#fff" />
+        </g>
+      </svg>
+    </div>
+    <script>
+      (function () {
+        var bridge = window.screenBlob;
+        if (!bridge) return;
+        var body = document.body;
+        var blob = document.getElementById("blob");
+        var label = document.getElementById("label");
+        var LOOKS = ["resting", "on", "reading", "blocked", "hidden"];
+        var down = false;
+
+        bridge.onState(function (state) {
+          if (!state) return;
+          LOOKS.forEach(function (look) { body.classList.toggle(look, state.look === look); });
+          body.classList.toggle("side-left", state.side === "left");
+          body.classList.toggle("side-right", state.side === "right");
+          if (typeof state.label === "string") {
+            label.textContent = state.label;
+            blob.setAttribute("aria-label", state.label);
+          }
+          if (state.pop) {
+            body.classList.remove("pop");
+            void body.offsetWidth;
+            body.classList.add("pop");
+          }
+        });
+
+        // The app moves the window while the button is down (a drag region would take the click
+        // the blob needs), and decides on release whether it was a click or a drag.
+        blob.addEventListener("pointerdown", function (e) {
+          if (e.button !== 0 || e.ctrlKey) return;
+          e.preventDefault();
+          down = true;
+          try { blob.setPointerCapture(e.pointerId); } catch (_) { /* the release still comes */ }
+          body.classList.add("held");
+          bridge.dragStart();
+        });
+        function release() {
+          if (!down) return;
+          down = false;
+          body.classList.remove("held");
+          bridge.dragEnd();
+        }
+        blob.addEventListener("pointerup", release);
+        blob.addEventListener("pointercancel", release);
+        blob.addEventListener("lostpointercapture", release);
+        document.addEventListener("contextmenu", function (e) {
+          e.preventDefault();
+          bridge.menu();
+        });
+        blob.addEventListener("mouseenter", function () { if (!down) bridge.hover(true); });
+        blob.addEventListener("mouseleave", function () { bridge.hover(false); });
+        document.addEventListener("keydown", function (e) {
+          if (e.key === "Enter" || e.key === " ") bridge.toggle();
+        });
+      })();
+    </script>
+  </body>
+</html>
