@@ -1,6 +1,14 @@
 import { app } from "electron";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { devValue } from "./env";
+
+/**
+ * An override read from the environment, honoured only in a development build; a packaged app
+ * ignores it, so another program on the machine cannot repoint the app by setting one
+ * (env.ts; WHAT_TO_FIX.md WIN-02 / MAC-02).
+ */
+const envOverride = (name: string): string | undefined => devValue(process.env[name], app.isPackaged);
 
 /**
  * Where the web app and its API live: tutornote.ai, or ANOTHERNOTES_URL for a test
@@ -9,7 +17,7 @@ import path from "node:path";
 const DEFAULT_SITE = "https://tutornote.ai";
 
 function resolveSite(): URL {
-  const override = process.env.ANOTHERNOTES_URL;
+  const override = envOverride("ANOTHERNOTES_URL");
   if (override) {
     try {
       return new URL(override);
@@ -45,7 +53,7 @@ export const WEBSITE_URL = DEFAULT_SITE;
  */
 export const APP_SCHEME = "app";
 export const RENDERER_DIR = path.join(app.getAppPath(), "renderer");
-export const BUNDLED = process.env.ANOTHERNOTES_SITE !== "1" && existsSync(path.join(RENDERER_DIR, "index.html"));
+export const BUNDLED = envOverride("ANOTHERNOTES_SITE") !== "1" && existsSync(path.join(RENDERER_DIR, "index.html"));
 export const APP_ORIGIN = BUNDLED ? `${APP_SCHEME}://anothernotes` : SITE_ORIGIN;
 /** The first page for a signed-in user. */
 export const APP_URL = `${APP_ORIGIN}${!BUNDLED && SITE.pathname !== "/" ? SITE.pathname : "/dashboard"}`;
@@ -55,7 +63,7 @@ export const APP_URL = `${APP_ORIGIN}${!BUNDLED && SITE.pathname !== "/" ? SITE.
  * local one (http://localhost:8010/api) while the pages come from a dev server.
  */
 function resolveApiUrl(): string {
-  const override = process.env.ANOTHERNOTES_API_URL;
+  const override = envOverride("ANOTHERNOTES_API_URL");
   if (override) {
     try {
       return new URL(override).toString().replace(/\/$/, "");
@@ -83,7 +91,7 @@ export const PROXIED_PATHS = ["/api", "/img", "/files", "/health"];
  * itself from ANOTHERNOTES_PREVIEW_KEY. Once set it lives in the app's profile for 30
  * days, so the variable is needed on one launch, not every launch.
  */
-export const PREVIEW_KEY = (process.env.ANOTHERNOTES_PREVIEW_KEY ?? "").trim();
+export const PREVIEW_KEY = (envOverride("ANOTHERNOTES_PREVIEW_KEY") ?? "").trim();
 export const PREVIEW_COOKIE = "an_preview";
 
 /** The refresh cookie the identity API sets, scoped to /api/auth/: present means signed in. */

@@ -1005,9 +1005,10 @@ function onTap(tap: ScreenTap): void {
   TUTORNOTE_TAP_LOG=1 in the environment, each verdict on a window that is not private is written
   to userData/taps/<time>.json with the glance the page had of the window and the careful read
   taken for the tap (once in), everything in screen points; the newest TAPS_KEPT are kept. Off
-  unless asked for: the files hold the words read.
+  unless asked for: the files hold the words read, so a packaged app never writes them however the
+  environment is set (WHAT_TO_FIX.md WIN-02 / MAC-02).
 */
-const TAP_LOG = process.env.TUTORNOTE_TAP_LOG === "1";
+const TAP_LOG = !app.isPackaged && process.env.TUTORNOTE_TAP_LOG === "1";
 const TAPS_KEPT = 200;
 let tapFolderSaid = false;
 
