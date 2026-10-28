@@ -8,6 +8,8 @@ each fix commit names the IDs it closes, and the Status column below is updated 
 
 **10 findings: 1 Medium, 9 Low.**
 
+**Status after the fixes: 6 fixed, 3 partly fixed, 1 left for a person (see "What is left" below the table).**
+
 How to read a finding:
 - **Severity:** how bad it is if exploited, given what is reachable today.
 - **Confidence:** `confirmed` means it was traced or reproduced in the code; `likely` means the code path is
@@ -18,16 +20,38 @@ How to read a finding:
 
 | ID | Severity | Category | What | Status |
 |---|---|---|---|---|
-| WIN-01 | Medium | Update | Unsigned installer, no update channel: no release integrity and no security updates | Open |
-| WIN-02 | Low | Other (trust boundary / configuration) | Launch environment variables repoint the trusted origin in packaged builds | Open |
-| WIN-03 | Low | Electron hardening | Chromium debugging and network switches are honoured; fuses do not cover them | Open |
-| WIN-04 | Low | Navigation | A sign-in "round trip" lets any HTTPS host reached by redirect load in the app window, with the preload | Open |
-| WIN-05 | Low | Electron hardening | `grantFileProtocolExtraPrivileges` stays on; the app's own file:// screens have weak or no CSP | Open |
-| WIN-06 | Low | Deep link | Any website can cancel an in-progress browser sign-in and pop the app or dialogs through `tutornote://auth/…` | Open |
-| WIN-07 | Low | Electron hardening | Microphone granted to the app origin with no prompt; CSP lets a third-party script host into that origin | Open |
-| WIN-08 | Low | Info leak | One-time sign-in secrets in logs; account data left on disk after uninstall | Open |
-| WIN-09 | Low | Hard-coded secret (information, not a credential) | Internal test server address in source | Open |
-| WIN-10 | Low | CVE | npm audit advisories are build-toolchain only; Electron 44.9.3 has none | Open |
+| WIN-01 | Medium | Update | Unsigned installer, no update channel: no release integrity and no security updates | Operator action: needs a code-signing certificate and an update feed |
+| WIN-02 | Low | Other (trust boundary / configuration) | Launch environment variables repoint the trusted origin in packaged builds | Fixed (`1a37433`) |
+| WIN-03 | Low | Electron hardening | Chromium debugging and network switches are honoured; fuses do not cover them | Fixed (`3a4adee`) |
+| WIN-04 | Low | Navigation | A sign-in "round trip" lets any HTTPS host reached by redirect load in the app window, with the preload | Fixed (`3497865`) |
+| WIN-05 | Low | Electron hardening | `grantFileProtocolExtraPrivileges` stays on; the app's own file:// screens have weak or no CSP | Partly fixed (`21b7f68`) |
+| WIN-06 | Low | Deep link | Any website can cancel an in-progress browser sign-in and pop the app or dialogs through `tutornote://auth/…` | Fixed (`f1fdb9a`) |
+| WIN-07 | Low | Electron hardening | Microphone granted to the app origin with no prompt; CSP lets a third-party script host into that origin | Partly fixed (`15b3d35`) |
+| WIN-08 | Low | Info leak | One-time sign-in secrets in logs; account data left on disk after uninstall | Partly fixed (`82affd4`) |
+| WIN-09 | Low | Hard-coded secret (information, not a credential) | Internal test server address in source | Fixed (`d951b99`) |
+| WIN-10 | Low | CVE | npm audit advisories are build-toolchain only; Electron 44.9.3 has none | Fixed (`3ec4e19`) |
+
+## What is left
+
+These need a certificate or a test on a real Windows machine. Everything else in the table is fixed on this branch. Typecheck passes, `npm test` passes 104/104 (13 new tests), and `npm audit` finds 0.
+
+1. **WIN-01: sign the app and give it an update feed.**
+   - Get an OV/EV code-signing certificate or Azure Trusted Signing.
+   - Add `win.signtoolOptions` (or `azureSignOptions`) and `publisherName` to `electron-builder.config.cjs`.
+   - Add a `publish` target (a public HTTPS bucket or GitHub releases).
+   - Remove `NO_FEED` in `src/main/updater.ts` and `publish: null` in the config. electron-updater then checks the Windows signature of every update.
+   - Until then, publish each installer's SHA-256 on an HTTPS page.
+2. **WIN-05:**
+   - Serve `static/` from a dedicated privileged scheme: `protocol.handle("tutornote-ui", …)`, standard and secure, path-checked like `renderer.ts`.
+   - Switch the `loadFile` calls to it and update `trusted()`.
+   - Then set `grantFileProtocolExtraPrivileges: false`.
+   - Check that every screen still loads in the packaged app; the config comment records they broke the last time this was tried.
+3. **WIN-07:** ask once in the app before granting the microphone, and store the answer in `userData`. The CSP and main-frame-only parts are done.
+4. **WIN-08:**
+   - Set `deleteAppDataOnUninstall: true` (this also deletes local drafts), or clear the cookie store on sign-out and uninstall.
+   - Remember the sign-in email only if the user opts in.
+
+   Log redaction is done.
 
 Branch `vulnerability_october_vulnerability` (HEAD 43a6895, cut from `feature/october`). Reviewed: `src/main/*`, `src/preload/*`, `static/*`, `electron-builder.config.cjs`, `scripts/*`, `package.json`/lockfile, full git history (`git log --all -p`). Most of `src/` is identical to the Mac repo (only `auth.ts`, `index.ts`, `updater.ts`, `windows.ts`, `companion.ts`, `static/toolbar.html` differ, and those diffs are mostly UI). `npm test`: 91/91 passing. Typecheck not run (no `node_modules`).
 
