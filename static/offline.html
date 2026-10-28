@@ -2,6 +2,9 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <!-- As every other static screen has one (WHAT_TO_FIX.md WIN-05 / MAC-06): the page loads
+         nothing from the network and runs only its own inline style and script. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
     <title>Tutornote</title>
     <style>
       :root { color-scheme: light dark; }
@@ -34,7 +37,10 @@
     <script>
       (function () {
         var q = new URLSearchParams(location.search);
-        var url = q.get("url") || "https://tutornote.ai/dashboard";
+        // Retry only an app:// or https:// address, never a javascript:/file:/data: one slipped
+        // into the query (WHAT_TO_FIX.md WIN-05 / MAC-06).
+        var raw = q.get("url") || "";
+        var url = /^(app|https):\/\//i.test(raw) ? raw : "https://tutornote.ai/dashboard";
         var why = q.get("why");
         var title = q.get("title");
         if (title) document.querySelector("h1").textContent = title;
