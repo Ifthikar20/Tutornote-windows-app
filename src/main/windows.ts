@@ -1414,7 +1414,9 @@ function installIpc(): void {
   ipcMain.on("chrome:layout", (event, report: unknown) => {
     const page = pageOf(event.sender);
     const r = (report ?? {}) as { right?: unknown; background?: unknown; surface?: unknown; dark?: unknown; scrim?: unknown; reading?: unknown };
-    if (!page || typeof r.right !== "number" || !Number.isFinite(r.right)) return;
+    // Only the web app at its own origin reports its layout; a provider page loaded during a
+    // sign-in round trip must not drive the tab bar (WHAT_TO_FIX.md WIN-04 / MAC-05).
+    if (!page || !isAppUrl(event.senderFrame?.url ?? "") || typeof r.right !== "number" || !Number.isFinite(r.right)) return;
     page.chrome = {
       right: Math.max(-1, Math.min(4000, Math.round(r.right))),
       background: typeof r.background === "string" ? r.background.slice(0, 64) : "",
@@ -1434,7 +1436,9 @@ function installIpc(): void {
   // other page in the home page. The page it was clicked in does not move.
   ipcMain.on("nav:open", (event, href: unknown) => {
     const page = pageOf(event.sender);
-    if (!page || !shown(page) || typeof href !== "string" || href.length > 2048) return;
+    // Only the web app at its own origin routes links; a provider page loaded during a sign-in
+    // round trip must not steer the app's tabs (WHAT_TO_FIX.md WIN-04 / MAC-05).
+    if (!page || !shown(page) || !isAppUrl(event.senderFrame?.url ?? "") || typeof href !== "string" || href.length > 2048) return;
     let url: string;
     try {
       url = new URL(href, APP_ORIGIN).toString();
