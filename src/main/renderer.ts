@@ -49,15 +49,18 @@ export function rendererBuild(): string {
  * picture the app shows is its own (/img), so img-src names no other host.
  * No Cloudflare Web Analytics hosts either: the privacy page promises no third-party
  * analytics, so the policy blocks such a beacon rather than sending it.
+ * No challenges.cloudflare.com (Turnstile): the bundle is built with Turnstile off
+ * (build:off, no site key), so it never loads that script, and naming it would only widen
+ * what could run in the app's origin (WHAT_TO_FIX.md WIN-07 / MAC-08).
  */
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' 'wasm-unsafe-eval' https://challenges.cloudflare.com",
-  "frame-src 'self' https://challenges.cloudflare.com",
+  "script-src 'self' 'wasm-unsafe-eval'",
+  "frame-src 'self'",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' data: https://fonts.gstatic.com",
   "img-src 'self' data: blob:",
-  "connect-src 'self' https://challenges.cloudflare.com",
+  "connect-src 'self'",
   "media-src 'self' blob:",
   "worker-src 'self' blob:",
   "object-src 'none'",

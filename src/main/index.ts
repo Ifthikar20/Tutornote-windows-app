@@ -146,6 +146,9 @@ if (!app.requestSingleInstanceLock()) {
         return callback(false);
       }
       if (permission === "media") {
+        // The microphone is for the web app's own page (dictation, talking to the tutor), never a
+        // subframe (WHAT_TO_FIX.md WIN-07 / MAC-08).
+        if (!details.isMainFrame) return callback(false);
         const types = "mediaTypes" in details ? (details.mediaTypes ?? []) : [];
         if (types.includes("video")) return callback(false);
         if (process.platform === "darwin") {
