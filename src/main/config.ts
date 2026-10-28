@@ -12,7 +12,7 @@ const envOverride = (name: string): string | undefined => devValue(process.env[n
 
 /**
  * Where the web app and its API live: tutornote.ai, or ANOTHERNOTES_URL for a test
- * server or a local build (http://100.49.56.40/, http://localhost:8080).
+ * server or a local build (http://<test-server>/, http://localhost:8080).
  */
 const DEFAULT_SITE = "https://tutornote.ai";
 

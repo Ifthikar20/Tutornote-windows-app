@@ -9,3 +9,10 @@ build/helpers/
 # Never commit settings files
 .env
 .env.*
+# Never commit signing material or other key files
+*.p12
+*.pfx
+*.pem
+*.key
+*.cer
+*.mobileprovision
