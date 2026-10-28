@@ -47,7 +47,9 @@ module.exports = {
   // The link that brings a browser sign-in back into the app (src/main/auth.ts). The NSIS
   // installer does not write it; the app registers itself on every start
   // (app.setAsDefaultProtocolClient), the same scheme as the Mac app until both move together.
-  protocols: { name: "Tutornote", schemes: ["anothernotes"] },
+  // tutornote:// is the sign-in link's scheme; anothernotes:// only until the web's /desktop/sign-in names it
+  // everywhere (src/main/auth.ts LEGACY_PROTOCOL).
+  protocols: { name: "Tutornote", schemes: ["tutornote", "anothernotes"] },
   publish: null,
   win: {
     target: [{ target: "nsis", arch: ["x64"] }],

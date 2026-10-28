@@ -1,7 +1,7 @@
 import { app, ipcMain, session, systemPreferences, type IpcMainInvokeEvent } from "electron";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { beginBrowserSignIn, cancelBrowserSignIn, deepLinksIn, handleDeepLink, registerProtocol } from "./auth";
+import { authLog, beginBrowserSignIn, cancelBrowserSignIn, deepLinksIn, handleDeepLink, registerProtocol } from "./auth";
 import {
   API_ORIGIN,
   API_URL,
@@ -59,6 +59,8 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on("second-instance", (_event, argv) => {
+    // (the step that shows whether Windows handed a sign-in link to this copy: the sign-in log)
+    if (deepLinksIn(argv).length) authLog(`a second launch brought ${deepLinksIn(argv).length} link(s)${launched ? "" : " before the window was up"}`);
     // (before the first window is made, as the Dock's activate: focusMainWindow would make one,
     // and the launch's own a second; its links wait with the cold start's, handled once it is)
     if (!launched) {
@@ -69,7 +71,7 @@ if (!app.requestSingleInstanceLock()) {
     for (const link of deepLinksIn(argv)) handleDeepLink(link);
   });
 
-  // macOS delivers anothernotes:// links here, possibly before the app is ready.
+  // macOS delivers tutornote:// (and old anothernotes://) links here, possibly before the app is ready.
   app.on("open-url", (event, url) => {
     event.preventDefault();
     if (getMainWindow()) handleDeepLink(url);
