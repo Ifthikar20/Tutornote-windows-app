@@ -63,6 +63,19 @@ export interface ScreenLine {
   words?: ScreenWord[];
 }
 
+/** A line the page draws for an answer (the founder, 2026-10-27: "on the page where there is dash or
+ *  line asking for a answer. some places asking for a answer can look like a long line breaker tab
+ *  too"): from x0 to x1, its middle at y, in the same screen points as the lines (tutornote-web
+ *  writePlace.ts AnswerLine). */
+export interface ScreenRule {
+  x0: number;
+  x1: number;
+  y: number;
+}
+
+/** The most answer lines a read keeps (the Windows helper sends no more). */
+const MAX_RULES = 200;
+
 export interface ScreenRead {
   app: string;
   bundle: string;
@@ -80,6 +93,10 @@ export interface ScreenRead {
   ground?: number;
   /** The pass that read it: "fast" (a glance) or "accurate". */
   level?: "fast" | "accurate";
+  /** The lines the page draws for an answer, found in an accurate read's picture (the Windows
+   *  helper's Rules.cs: the web's rulesIn, words' own underlines left out), top to bottom; [] when
+   *  there are none. Absent when none were looked for: a glance, or the Mac's helper. */
+  rules?: ScreenRule[];
   /** How long its words waited, once pictured, for a companion tap being judged (main.swift
    *  tapsJudged: Vision reads one picture at a time); only when it waited. */
   heldMs?: number;
@@ -158,12 +175,34 @@ export function hideFromCapture(win: BaseWindow): void {
 
 type Box = { x: number; y: number; w: number; h: number };
 const boxIn = (b: Box): Box => {
-  const r = screen.screenToDipRect(null, { x: b.x, y: b.y, width: b.w, height: b.h });
+  // (Electron takes a rectangle in whole pixels only)
+  const r = screen.screenToDipRect(null, { x: Math.round(b.x), y: Math.round(b.y), width: Math.round(b.w), height: Math.round(b.h) });
   return { x: r.x, y: r.y, w: r.width, h: r.height };
 };
 const isBox = (v: unknown): v is Box => {
   const b = v as Record<string, unknown> | null;
   return !!b && finiteNumber(b.x) && finiteNumber(b.y) && finiteNumber(b.w) && finiteNumber(b.h);
+};
+
+/** A read's answer lines as the helper sent them: each one finite numbers with x1 past x0, the first
+ *  MAX_RULES of them; null when it sent none (none were looked for). */
+function rulesOf(value: unknown): ScreenRule[] | null {
+  if (!Array.isArray(value)) return null;
+  const rules: ScreenRule[] = [];
+  for (const v of value as unknown[]) {
+    const r = v as Record<string, unknown> | null;
+    if (!r || !finiteNumber(r.x0) || !finiteNumber(r.x1) || !finiteNumber(r.y) || !(r.x1 > r.x0)) continue;
+    rules.push({ x0: r.x0, x1: r.x1, y: r.y });
+    if (rules.length >= MAX_RULES) break;
+  }
+  return rules;
+}
+
+/** Windows: an answer line from physical pixels into the app's points, as a line's box is (a pixel
+ *  tall, on the display the box is nearest). */
+const ruleIn = (r: ScreenRule): ScreenRule => {
+  const b = boxIn({ x: r.x0, y: r.y, w: r.x1 - r.x0, h: 1 });
+  return { x0: b.x, x1: b.x + b.w, y: b.y };
 };
 
 /** Windows: a helper message's points and boxes, from physical pixels into the app's points. */
@@ -183,6 +222,8 @@ function pixelsIn(msg: Record<string, unknown>): void {
       if (Array.isArray(words)) for (const word of words as Array<Record<string, unknown>>) if (isBox(word)) Object.assign(word, boxIn(word));
     }
   }
+  const rules = rulesOf(msg.rules);
+  if (rules) msg.rules = rules.map(ruleIn);
 }
 
 /** Windows: a point the app names, into the helper's physical pixels. */
@@ -685,9 +726,17 @@ export function restartScreenHelper(): void {
   }
 }
 
+/** A read as the helper answered it, its answer lines checked (rulesOf): one that sent none has none. */
+function readOf(answer: Record<string, unknown>): ScreenRead {
+  const rules = rulesOf(answer.rules);
+  if (rules) answer.rules = rules;
+  else delete answer.rules;
+  return answer as unknown as ScreenRead;
+}
+
 /** The text of the window on top at (x, y), skipping the windows of the processes in `exclude`. */
 export async function readWindowAt(x: number, y: number, exclude: number[]): Promise<ScreenRead> {
-  return (await request({ cmd: "read", ...pixelsOut({ x, y }), exclude }, "read", READ_TIMEOUT_MS)) as unknown as ScreenRead;
+  return readOf(await request({ cmd: "read", ...pixelsOut({ x, y }), exclude }, "read", READ_TIMEOUT_MS));
 }
 
 /**
@@ -698,7 +747,7 @@ export async function readWindowAt(x: number, y: number, exclude: number[]): Pro
  */
 export async function readWindow(window: number, opts?: { fast?: boolean }): Promise<ScreenRead> {
   const level = opts?.fast ? { level: "fast" } : {};
-  return (await request({ cmd: "read", window, ...level }, "read", READ_TIMEOUT_MS)) as unknown as ScreenRead;
+  return readOf(await request({ cmd: "read", window, ...level }, "read", READ_TIMEOUT_MS));
 }
 
 /**

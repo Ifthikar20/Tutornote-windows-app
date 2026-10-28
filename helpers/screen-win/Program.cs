@@ -232,6 +232,14 @@ namespace Tutornote.Screen
             }
         }
 
+        /**
+         * A read's answer, {"ev":"read"}: `app`, `bundle`, `title`, `window`, `pid`, `frame`, `lines`
+         * (each with `t`, `c`, a box and its `words` with boxes), `captureMs`, `ocrMs`, `level`
+         * ("fast" for a glance, "accurate"), `ground`; and, on an accurate read only, `rules`: the
+         * lines the page draws for an answer (Rules.cs: solid, dotted or dashed; on a dark page its
+         * light ones too), [{x0, x1, y}], the line's ends and its middle, an empty list when there
+         * are none. A glance looks for none, and sends no `rules`. Every box and point in screen pixels.
+         */
         public static Dictionary<string, object> ReadWindow(IntPtr h, bool fast)
         {
             RECT frame = Win32.FrameOf(h);
@@ -257,6 +265,9 @@ namespace Tutornote.Screen
                 level = "accurate";
             }
             long ocrMs = Clock.Ms - t1;
+            double ground = Diff.Ground(look);
+            // (the page's answer lines, from the whole picture before it goes: never on a glance)
+            List<Rule> rules = level == "accurate" ? Rules.Of(pic, frame.Left, frame.Top, Win32.ScaleOf(h), lines, ground) : null;
             var outLines = new List<object>();
             foreach (var l in lines)
             {
@@ -268,12 +279,19 @@ namespace Tutornote.Screen
                     { "t", l.T }, { "c", 1 }, { "x", J.R(l.X) }, { "y", J.R(l.Y) }, { "w", J.R(l.W) }, { "h", J.R(l.H) }, { "words", words },
                 });
             }
-            return new Dictionary<string, object>
+            var answer = new Dictionary<string, object>
             {
                 { "ev", "read" }, { "app", app.Name }, { "bundle", app.Bundle }, { "title", title },
                 { "window", h.ToInt64() }, { "pid", (long)app.Pid }, { "frame", J.Frame(frame) }, { "lines", outLines },
-                { "captureMs", captureMs }, { "ocrMs", ocrMs }, { "level", level }, { "ground", Diff.Ground(look) },
+                { "captureMs", captureMs }, { "ocrMs", ocrMs }, { "level", level }, { "ground", ground },
             };
+            if (rules != null)
+            {
+                var outRules = new List<object>();
+                foreach (var r in rules) outRules.Add(new Dictionary<string, object> { { "x0", J.R(r.X0) }, { "x1", J.R(r.X1) }, { "y", J.R(r.Y) } });
+                answer["rules"] = outRules;
+            }
+            return answer;
         }
     }
 

@@ -673,6 +673,8 @@ function toLocal(read: ScreenRead, origin: Point): ScreenRead {
     ocrMs: read.ocrMs,
     ...(typeof read.ground === "number" && Number.isFinite(read.ground) ? { ground: read.ground } : {}),
     ...(read.level ? { level: read.level } : {}),
+    // (the page's answer lines, where an accurate read looked for them: absent stays absent)
+    ...(read.rules ? { rules: read.rules.map((r) => ({ x0: r.x0 - origin.x, x1: r.x1 - origin.x, y: r.y - origin.y })) } : {}),
   };
 }
 
