@@ -1,7 +1,8 @@
-import { app, dialog } from "electron";
+import { app, dialog, type BrowserWindow } from "electron";
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { classifyCallback, consumesPending } from "./authCallback";
 import { API_URL, APP_ORIGIN, BUNDLED, SITE_ORIGIN } from "./config";
 import { openExternal } from "./links";
 import { focusMainWindow, openAfterSignIn } from "./windows";
@@ -92,66 +93,19 @@ export function deepLinksIn(argv: string[]): string[] {
   return argv.filter(isOurLink);
 }
 
-/** Where the API's exchange lives for this code; null when the link is not one this app is waiting
- *  for (and why, in the sign-in log). */
-export function exchangeUrlFor(raw: string): string | null {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    authLog("a link that is no URL was turned away");
-    return null;
-  }
-  if (!SCHEMES.some((s) => url.protocol === `${s}:`) || url.hostname !== "auth" || url.pathname !== "/callback") return null;
-  const code = url.searchParams.get("code") ?? "";
-  const state = url.searchParams.get("state") ?? "";
-  const current = pending;
-  pending = null;
-  if (!current) {
-    authLog("callback turned away: no browser sign-in is waiting in this window (started in another copy of the app, or already used)");
-    return null;
-  }
-  const age = Math.round((Date.now() - current.startedAt) / 1000);
-  if (age * 1000 > PENDING_TTL_MS) {
-    authLog(`callback turned away: the sign-in was started ${age} s ago (it waits ${PENDING_TTL_MS / 1000} s)`);
-    return null;
-  }
-  if (state !== current.state) {
-    authLog("callback turned away: its state is not the one this sign-in made");
-    return null;
-  }
-  if (!TOKEN.test(code)) {
-    authLog("callback turned away: its code is malformed");
-    return null;
-  }
-  // With the bundled renderer the exchange goes through the app's origin (renderer.ts
-  // forwards it and brings the redirect to /auth/callback back into the bundle).
+/** The API's exchange URL for an accepted callback (the bundled renderer forwards it through the
+ *  app's own origin; renderer.ts brings the redirect to /auth/callback back into the bundle). */
+function exchangeUrl(code: string, state: string, verifier: string): string {
   const exchange = new URL(BUNDLED ? `${APP_ORIGIN}/api/auth/desktop/exchange` : `${API_URL}/auth/desktop/exchange`);
   exchange.searchParams.set("code", code);
   exchange.searchParams.set("state", state);
-  exchange.searchParams.set("code_verifier", current.verifier);
-  authLog(`callback accepted ${age} s after the sign-in started: exchanging the code`);
+  exchange.searchParams.set("code_verifier", verifier);
   return exchange.toString();
 }
 
-/** A link the OS delivered. Only auth/callback means anything; anything else just brings the window up. */
-export function handleDeepLink(raw: string): void {
-  if (!isOurLink(raw)) return;
-  let shown = raw.split("?")[0];
-  try {
-    const u = new URL(raw);
-    shown = `${u.protocol}//${u.hostname}${u.pathname} (code ${u.searchParams.has("code") ? "yes" : "no"}, state ${u.searchParams.has("state") ? "yes" : "no"})`;
-  } catch {
-    /* (shown as its start) */
-  }
-  authLog(`link received from the system: ${shown}`);
-  const win = focusMainWindow();
-  const exchange = exchangeUrlFor(raw);
-  if (exchange) {
-    openAfterSignIn(exchange);
-    return;
-  }
-  if (new URL(raw).hostname !== "auth") return;
+/** Offer to start the browser sign-in again (a callback that was this app's own but came too late,
+ *  or carried a malformed code). */
+function offerRestart(win: BrowserWindow): void {
   void dialog
     .showMessageBox(win, {
       type: "info",
@@ -164,6 +118,47 @@ export function handleDeepLink(raw: string): void {
     .then(({ response }) => {
       if (response === 0) beginBrowserSignIn();
     });
+}
+
+/** A link the OS delivered. Only an auth/callback that carries this sign-in's own state means
+ *  anything; anything else just brings the window up, and never gives up the waiting sign-in
+ *  (authCallback.ts; WHAT_TO_FIX.md WIN-06). */
+export function handleDeepLink(raw: string): void {
+  if (!isOurLink(raw)) return;
+  let shown = raw.split("?")[0];
+  try {
+    const u = new URL(raw);
+    shown = `${u.protocol}//${u.hostname}${u.pathname} (code ${u.searchParams.has("code") ? "yes" : "no"}, state ${u.searchParams.has("state") ? "yes" : "no"})`;
+  } catch {
+    /* (shown as its start) */
+  }
+  authLog(`link received from the system: ${shown}`);
+  const win = focusMainWindow();
+  const result = classifyCallback(raw, pending, Date.now(), { schemes: SCHEMES, ttlMs: PENDING_TTL_MS, token: TOKEN });
+  // The waiting sign-in is given up only once a link with its own state arrives (classifyCallback).
+  if (consumesPending(result)) pending = null;
+  switch (result.kind) {
+    case "ok":
+      authLog(`callback accepted ${result.ageSeconds} s after the sign-in started: exchanging the code`);
+      openAfterSignIn(exchangeUrl(result.code, result.state, result.verifier));
+      return;
+    case "expired":
+      authLog(`callback turned away: the sign-in was started ${result.ageSeconds} s ago (it waits ${PENDING_TTL_MS / 1000} s)`);
+      offerRestart(win);
+      return;
+    case "bad-code":
+      authLog("callback turned away: its code is malformed");
+      offerRestart(win);
+      return;
+    case "wrong-state":
+      authLog("callback ignored: its state is not the one this sign-in made (the waiting sign-in is kept)");
+      return;
+    case "no-pending":
+      authLog("callback ignored: no browser sign-in is waiting in this window (started in another copy of the app, or already used)");
+      return;
+    case "not-callback":
+      return;
+  }
 }
 
 /** Make this app the one the OS opens tutornote:// links with (and the old anothernotes:// ones,
