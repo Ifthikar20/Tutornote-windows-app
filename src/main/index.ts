@@ -1,6 +1,7 @@
 import { app, ipcMain, session, systemPreferences, type IpcMainInvokeEvent } from "electron";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { offendingSwitch } from "./argGuard";
 import { authLog, beginBrowserSignIn, cancelBrowserSignIn, deepLinksIn, handleDeepLink, registerProtocol } from "./auth";
 import {
   API_ORIGIN,
@@ -37,6 +38,17 @@ import { createMainWindow, focusMainWindow, getMainWindow, setBrowserSignIn, sho
 */
 
 app.setAppUserModelId("app.tutornote.desktop");
+
+// A packaged app refuses the debugging, proxy and certificate switches that would let another
+// program on the machine instrument it or read its origin (WHAT_TO_FIX.md WIN-03 / MAC-03); the
+// fuses cover only the matching environment variables. A development run keeps them.
+if (app.isPackaged) {
+  const bad = offendingSwitch((name) => app.commandLine.hasSwitch(name));
+  if (bad) {
+    console.error(`[anothernotes] refusing to start: the --${bad} switch is not allowed`);
+    app.exit(1);
+  }
+}
 
 // An error nothing caught goes to the log (the terminal the app was started from), not
 // into a dialog that stops the app until someone clicks it away.
