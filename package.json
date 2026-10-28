@@ -10,7 +10,8 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/build-screen-helper.mjs",
+    "helper": "node scripts/build-screen-helper.mjs --force",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --experimental-strip-types --test scripts/tests/boardHost.test.ts scripts/tests/boardPlace.test.ts scripts/tests/companionPlace.test.ts scripts/tests/speechLog.test.ts scripts/tests/apiTiming.test.ts scripts/tests/launchReveal.test.ts scripts/tests/docIdentity.test.ts",
     "renderer": "node scripts/build-renderer.mjs",

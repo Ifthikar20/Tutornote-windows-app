@@ -19,6 +19,11 @@ const releaseDir =
   process.env.TUTORNOTE_RELEASE_DIR ||
   path.join(process.env.LOCALAPPDATA || path.join(__dirname, ".."), "tutornote-build", "release");
 
+// The screen helper (helpers/screen-win, scripts/build-screen-helper.mjs): reads another app's
+// window for the tutor on screen (src/main/screen.ts). Packaged next to the app when it was built.
+const screenHelper = path.join(__dirname, "build", "helpers", "tutornote-screen.exe");
+const hasScreenHelper = require("node:fs").existsSync(screenHelper);
+
 /** @type {import("electron-builder").Configuration} */
 module.exports = {
   appId: "app.tutornote.desktop",
@@ -56,6 +61,7 @@ module.exports = {
     icon: "build/icon.png",
     requestedExecutionLevel: "asInvoker",
     artifactName: "Tutornote-Setup-${version}.${ext}",
+    ...(hasScreenHelper ? { extraResources: [{ from: screenHelper, to: "tutornote-screen.exe" }] } : {}),
   },
   nsis: {
     oneClick: true,

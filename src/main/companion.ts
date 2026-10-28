@@ -25,6 +25,7 @@ import { appEvents } from "./events";
 import { ensureScreenReading, screenPanelWindow } from "./explain";
 import {
   companionWatch,
+  hideFromCapture,
   observeWindows,
   readWindow,
   restartScreenHelper,
@@ -333,6 +334,7 @@ function ensureBlob(): BrowserWindow {
   created.setAlwaysOnTop(true, "floating", 2);
   // Over a full-screen app's Space too; once, here (screenTeach.ts ensureWindow says what it costs).
   created.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  hideFromCapture(created);
   created.webContents.on("will-navigate", (event) => event.preventDefault());
   created.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   created.on("closed", () => {
@@ -1341,10 +1343,10 @@ export function installCompanion(): void {
   screen.on("display-removed", () => reclampBlob());
   screen.on("display-metrics-changed", () => reclampBlob());
 
-  // Not on a machine that cannot read other apps (Windows, until its screen helper exists): there
-  // Ctrl+Alt+E is AltGr+E, the euro sign on many keyboards, and would be taken from every app.
+  // Mac only: on Windows Ctrl+Alt+E is AltGr+E, the euro sign on many keyboards, and a global
+  // shortcut would take it from every app. There the tab bar's button and the blob turn the tutor on.
   if (
-    (process.platform === "darwin" || screenReadingAvailable()) &&
+    process.platform === "darwin" &&
     !globalShortcut.register(SHORTCUT, () => {
       if (!blobShown) showBlob();
       toggle();

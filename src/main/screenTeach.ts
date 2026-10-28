@@ -56,6 +56,7 @@ import { watchLessonAudio } from "./media";
 import {
   accessibilityAllowed,
   chordWatch,
+  hideFromCapture,
   observeWindows,
   readWindow,
   ScreenReadError,
@@ -764,6 +765,7 @@ function adoptBoard(opener: BrowserWindow, options: BrowserWindowConstructorOpti
   // Over a full-screen app's Space too, as the lesson's window (ensureWindow says what that costs:
   // once per window, and the board is kept for the lesson window's life).
   host.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  hideFromCapture(host);
   contents.setZoomMode("isolated");
   // (the student's text size for the board, View > Zoom In: menu.ts)
   contents.setZoomLevel(prefs.zoom);
@@ -1490,6 +1492,7 @@ function ensureWindow(bounds: Rectangle): BrowserWindow {
   // reused, so that is once per window. Skipping the transform would keep the icon steady but the
   // lesson would never show over a full-screen app.
   created.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  hideFromCapture(created);
   created.setIgnoreMouseEvents(true, { forward: true });
   ignoring = true;
   interactive = false;
@@ -1578,8 +1581,13 @@ function dropWindow(): void {
   appEvents.emit("screen-teach-gone");
 }
 
+/** The lesson's Control+Option keys are the Mac's: on Windows Ctrl+Alt is AltGr on many keyboards
+ *  (Ctrl+Alt+Right would take AltGr+Right from every app), so there the dock's buttons and mic are
+ *  the way in until Windows keys are chosen. */
+const CTRL_ALT_KEYS = process.platform === "darwin";
+
 function registerShortcuts(): void {
-  for (const [accelerator, command] of SHORTCUTS) {
+  for (const [accelerator, command] of CTRL_ALT_KEYS ? SHORTCUTS : []) {
     if (globalShortcut.isRegistered(accelerator)) continue;
     const pressed = (): void => {
       // (its Control and Option let go just after are no chord tap: onChord)
@@ -1608,7 +1616,7 @@ function registerTalkKey(): void {
     talkKeyOn = true;
     chordWatch(true);
   }
-  if (globalShortcut.isRegistered(TALK_SHORTCUT)) return;
+  if (!CTRL_ALT_KEYS || globalShortcut.isRegistered(TALK_SHORTCUT)) return;
   const pressed = (): void => {
     // A tap of the mic, as a chord "tap" is (the page's tap rule); its own Control and Option let
     // go just after are no chord tap (onChord).

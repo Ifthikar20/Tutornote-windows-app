@@ -1,4 +1,4 @@
-import { app } from "electron";
+import { app, screen, type BaseWindow } from "electron";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
@@ -20,9 +20,18 @@ import { TAP_WORDS, type TapWords } from "./companionPlace";
 
   No helper (not macOS 14 or later, not built, not in the bundle): screenReadingAvailable()
   is false and the feature says so instead of starting.
+
+  On Windows the helper is helpers/screen-win (C#, built by scripts/build-screen-helper.mjs): the
+  same commands and events, with its points and boxes in physical screen pixels. They are turned
+  into the app's own points here, display by display (pixelsIn, pixelsOut), so nothing past this
+  file knows the difference.
 */
 
-const HELPER = "tutornote-screen";
+const HELPER = process.platform === "win32" ? "tutornote-screen.exe" : "tutornote-screen";
+/** Windows: the helper speaks physical pixels, the app its own points (DIPs). */
+const PIXELS = process.platform === "win32";
+/** Windows 10 2004 (build 19041): Tutornote's floating windows can be left out of screen pictures. */
+const WINDOWS_MIN_BUILD = 19041;
 
 /** A read that never came back (a helper too old for the command ignores it) gives up after this. */
 const READ_TIMEOUT_MS = 30_000;
@@ -123,14 +132,63 @@ export class ScreenReadError extends Error {
 }
 
 function helperPath(): string | null {
-  if (process.platform !== "darwin") return null;
-  // ScreenCaptureKit's one-picture capture is macOS 14 (Darwin 23) and later.
-  if (Number(os.release().split(".")[0]) < 23) return null;
+  if (process.platform === "win32") {
+    if (Number(os.release().split(".")[2] ?? 0) < WINDOWS_MIN_BUILD) return null;
+  } else if (process.platform !== "darwin") {
+    return null;
+  } else if (Number(os.release().split(".")[0]) < 23) {
+    // ScreenCaptureKit's one-picture capture is macOS 14 (Darwin 23) and later.
+    return null;
+  }
   const file = app.isPackaged ? path.join(process.resourcesPath, HELPER) : path.join(app.getAppPath(), "build", "helpers", HELPER);
   return existsSync(file) ? file : null;
 }
 
 export const screenReadingAvailable = (): boolean => helperPath() !== null;
+
+/**
+ * Windows: keep one of Tutornote's floating windows (the lesson's layer, the blob, the board, the
+ * Explain on screen panel) out of every screen picture, so the helper's looks of a page never take
+ * the tutor's own pointer and marks for the page changing. The window still shows on the display;
+ * it also stays out of the student's own screenshots and screen shares.
+ */
+export function hideFromCapture(win: BaseWindow): void {
+  if (PIXELS) win.setContentProtection(true);
+}
+
+type Box = { x: number; y: number; w: number; h: number };
+const boxIn = (b: Box): Box => {
+  const r = screen.screenToDipRect(null, { x: b.x, y: b.y, width: b.w, height: b.h });
+  return { x: r.x, y: r.y, w: r.width, h: r.height };
+};
+const isBox = (v: unknown): v is Box => {
+  const b = v as Record<string, unknown> | null;
+  return !!b && finiteNumber(b.x) && finiteNumber(b.y) && finiteNumber(b.w) && finiteNumber(b.h);
+};
+
+/** Windows: a helper message's points and boxes, from physical pixels into the app's points. */
+function pixelsIn(msg: Record<string, unknown>): void {
+  if (finiteNumber(msg.x) && finiteNumber(msg.y)) {
+    const p = screen.screenToDipPoint({ x: msg.x, y: msg.y });
+    msg.x = p.x;
+    msg.y = p.y;
+  }
+  for (const key of ["frame", "topFrame"]) if (isBox(msg[key])) msg[key] = boxIn(msg[key]);
+  const other = msg.other as Record<string, unknown> | null | undefined;
+  if (other && isBox(other.frame)) other.frame = boxIn(other.frame);
+  if (Array.isArray(msg.lines)) {
+    for (const line of msg.lines as Array<Record<string, unknown>>) {
+      const words = line.words;
+      if (isBox(line)) Object.assign(line, boxIn(line));
+      if (Array.isArray(words)) for (const word of words as Array<Record<string, unknown>>) if (isBox(word)) Object.assign(word, boxIn(word));
+    }
+  }
+}
+
+/** Windows: a point the app names, into the helper's physical pixels. */
+function pixelsOut(p: { x: number; y: number }): { x: number; y: number } {
+  return PIXELS ? screen.dipToScreenPoint(p) : p;
+}
 
 type Helper = ChildProcessByStdio<Writable, Readable, Readable>;
 
@@ -339,6 +397,7 @@ function onLine(line: string): void {
     console.warn(`[screen] ${line}`);
     return;
   }
+  if (PIXELS) pixelsIn(msg);
   if (msg.ev === "status") {
     statusWaiters.shift()?.(msg.screen === true);
     return;
@@ -501,7 +560,7 @@ function ensureHelper(): Helper | null {
   if (!file) return null;
   let child: Helper;
   try {
-    child = spawn(file, [], { stdio: ["pipe", "pipe", "pipe"] });
+    child = spawn(file, [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
   } catch (e) {
     console.warn(`[screen] could not start the helper: ${(e as Error).message}`);
     return null;
@@ -628,7 +687,7 @@ export function restartScreenHelper(): void {
 
 /** The text of the window on top at (x, y), skipping the windows of the processes in `exclude`. */
 export async function readWindowAt(x: number, y: number, exclude: number[]): Promise<ScreenRead> {
-  return (await request({ cmd: "read", x, y, exclude }, "read", READ_TIMEOUT_MS)) as unknown as ScreenRead;
+  return (await request({ cmd: "read", ...pixelsOut({ x, y }), exclude }, "read", READ_TIMEOUT_MS)) as unknown as ScreenRead;
 }
 
 /**
@@ -648,7 +707,7 @@ export async function readWindow(window: number, opts?: { fast?: boolean }): Pro
  * `signal`: given up (a wait for the student no longer wanted), it fails with "cancelled".
  */
 export async function turnWindow(turn: ScreenTurn, signal?: AbortSignal): Promise<ScreenTurned> {
-  const answer = await request({ cmd: "turn", ...turn }, "turned", turn.timeoutMs + TURN_GRACE_MS, signal);
+  const answer = await request({ cmd: "turn", ...turn, at: pixelsOut(turn.at) }, "turned", turn.timeoutMs + TURN_GRACE_MS, signal);
   return {
     changed: answer.changed === true,
     settleMs: typeof answer.settleMs === "number" ? answer.settleMs : 0,

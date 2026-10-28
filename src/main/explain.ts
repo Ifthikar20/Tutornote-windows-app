@@ -1,7 +1,7 @@
 import { app, BrowserWindow, globalShortcut, ipcMain, screen, shell, type IpcMainEvent, type Rectangle } from "electron";
 import path from "node:path";
 import { appEvents } from "./events";
-import { readWindowAt, requestScreenAccess, restartScreenHelper, screenAllowed, ScreenReadError, screenReadingAvailable, type ScreenRead } from "./screen";
+import { hideFromCapture, readWindowAt, requestScreenAccess, restartScreenHelper, screenAllowed, ScreenReadError, screenReadingAvailable, type ScreenRead } from "./screen";
 import { closeScreenTeach, openScreenTeach, screenTeachOpen } from "./screenTeach";
 import { blocksOf, type Rect } from "./screenText";
 import { getMainWindow } from "./windows";
@@ -84,6 +84,7 @@ function ensurePanel(): BrowserWindow {
   win.setAlwaysOnTop(true, "floating", 1);
   // Over a full-screen app too (Kindle in full-screen Chrome): see screenTeach.ts for the price.
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  hideFromCapture(win);
   win.webContents.on("will-navigate", (event) => event.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.on("closed", () => {
@@ -143,6 +144,7 @@ function overlayFor(display: Electron.Display): BrowserWindow {
   });
   win.setAlwaysOnTop(true, "floating");
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  hideFromCapture(win);
   win.setIgnoreMouseEvents(true);
   win.webContents.on("will-navigate", (event) => event.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
