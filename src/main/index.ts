@@ -198,7 +198,9 @@ if (!app.requestSingleInstanceLock()) {
       details.requestHeaders["X-AnotherNotes-Client"] = CLIENT_HEADER;
       if (details.resourceType === "mainFrame") {
         const sent = /(^|;\s*)an_preview=[^;]+/.test(details.requestHeaders.Cookie ?? "");
-        console.log(`[anothernotes] GET ${details.url} gateKey=${sent ? "sent" : "not sent"}`);
+        // Path only: the desktop exchange is a top-level GET whose query carries the code and the
+        // PKCE verifier (WHAT_TO_FIX.md WIN-08 / MAC-11).
+        console.log(`[anothernotes] GET ${details.url.split(/[?#]/)[0]} gateKey=${sent ? "sent" : "not sent"}`);
       }
       callback({ requestHeaders: details.requestHeaders });
     });

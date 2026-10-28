@@ -298,10 +298,15 @@ const pathOf = (url: string): string | null => {
   }
 };
 
-/** A URL for the log: never its fragment, which carries the access token after a sign-in. */
+/** A URL for the log: origin and path only, never the query or the fragment, which carry a
+ *  sign-in's one-time code, its PKCE verifier and its access token (WHAT_TO_FIX.md WIN-08 / MAC-11). */
 const forLog = (url: string): string => {
-  const hash = url.indexOf("#");
-  return hash < 0 ? url : `${url.slice(0, hash)}#…`;
+  try {
+    const u = new URL(url);
+    return `${u.origin}${u.pathname}${u.search ? "?…" : ""}${u.hash ? "#…" : ""}`;
+  } catch {
+    return url.split(/[?#]/)[0];
+  }
 };
 
 const startsRoundTrip = (url: string): boolean => {
