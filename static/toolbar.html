@@ -90,6 +90,30 @@
       #explain svg { width: 18px; height: 18px; }
       #explain .arrow { fill: currentColor; stroke: var(--arrow-edge); stroke-width: 1.9; stroke-linejoin: round; }
       #explain .arrow-stroke { fill: none; stroke: var(--arrow-edge); stroke-width: 1.4; stroke-linecap: round; }
+      /* Now and then it shines (the founder, 2026-10-28: "a shiny effect ... every 5 minutes ... a
+         button that can enable creativity"): a light sweeps across the pointer, a violet glow lifts
+         round the button and two small sparkles twinkle by it. Once a little after the app opens,
+         then every five minutes, only while the tutor is off (the script at the end). */
+      #explain .glint { fill: #fff; opacity: .85; transform: translateX(-10px); }
+      #explain .spark { fill: var(--button); opacity: 0; transform-box: fill-box; transform-origin: center; }
+      #explain.shine { animation: an-tutor-glow 1.6s ease-out; }
+      #explain.shine .glint { animation: an-tutor-glint 1s cubic-bezier(.45, 0, .2, 1) .15s both; }
+      #explain.shine .spark { animation: an-tutor-spark 1.1s ease-out .5s both; }
+      #explain.shine .spark.late { animation-delay: .75s; }
+      @keyframes an-tutor-glint { from { transform: translateX(-10px); } to { transform: translateX(32px); } }
+      @keyframes an-tutor-glow {
+        40% { background: var(--button-tint); box-shadow: 0 0 12px 2px color-mix(in srgb, var(--button) 45%, transparent); }
+      }
+      @keyframes an-tutor-spark {
+        0% { opacity: 0; transform: scale(.2) rotate(0deg); }
+        40% { opacity: 1; transform: scale(1.1) rotate(15deg); }
+        100% { opacity: 0; transform: scale(.4) rotate(30deg); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #explain.shine, #explain.shine .glint, #explain.shine .spark { animation: none; }
+      }
+      /* Turned on mid-shine: the shine stops, so the button is its plain violet at once. */
+      #explain.on, #explain.on .glint, #explain.on .spark { animation: none; }
       body.signin #explain, body.no-tutor #explain { display: none; }
       /* Signing in: one tab of its own, with nothing to open, close or go back to. */
       .tab.fixed { width: 150px; padding: 0 12px 0 12px; }
@@ -129,7 +153,13 @@
       </button>
       <!-- Tutor on screen (src/main/companion.ts): turns the tutor on and off, which follows the cursor over any app. -->
       <button class="icon" id="explain" type="button" title="Turn on the tutor" aria-label="Turn on the tutor">
-        <svg viewBox="1 1.5 25 25" aria-hidden="true"><path class="arrow" d="M3 3L19.6 16.2L10.1 17.5L3 25.2Z" /><path class="arrow-stroke" d="M4.7 6.8V11.6" /></svg>
+        <svg viewBox="1 1.5 25 25" aria-hidden="true">
+          <defs><clipPath id="explain-arrow"><path d="M3 3L19.6 16.2L10.1 17.5L3 25.2Z" /></clipPath></defs>
+          <path class="arrow" d="M3 3L19.6 16.2L10.1 17.5L3 25.2Z" />
+          <g clip-path="url(#explain-arrow)"><path class="glint" d="M1 0h7l-6 30h-7Z" /></g>
+          <path class="arrow-stroke" d="M4.7 6.8V11.6" />
+          <path class="spark" d="M22 2Q22 6 26 6Q22 6 22 10Q22 6 18 6Q22 6 22 2Z" /><path class="spark late" d="M15.6 2.4Q15.6 4.8 18 4.8Q15.6 4.8 15.6 7.2Q15.6 4.8 13.2 4.8Q15.6 4.8 15.6 2.4Z" />
+        </svg>
       </button>
     </div>
     <script>
@@ -310,6 +340,33 @@
         }
 
         bridge.onState(draw);
+      })();
+    </script>
+    <script>
+      // The tutor button's shine (#explain.shine above): once a little after the app opens, then
+      // every five minutes; never while the tutor is on, the bar is hidden or motion is turned down.
+      (function () {
+        var tutor = document.getElementById("explain");
+        var body = document.body;
+        var calm = window.matchMedia("(prefers-reduced-motion: reduce)");
+        function shine() {
+          if (calm.matches || tutor.classList.contains("on")) return false;
+          if (body.classList.contains("hidden") || body.classList.contains("signin") || body.classList.contains("no-tutor")) return false;
+          tutor.classList.remove("shine");
+          void tutor.offsetWidth; // so the same class starts its animations over
+          tutor.classList.add("shine");
+          return true;
+        }
+        tutor.addEventListener("animationend", function (e) {
+          if (e.animationName === "an-tutor-glow") tutor.classList.remove("shine");
+        });
+        // The first: once the bar shows (it is hidden until the app sends its state), within 30 s.
+        var tries = 0;
+        function first() {
+          if (!shine() && ++tries < 30) setTimeout(first, 1000);
+        }
+        setTimeout(first, 1500);
+        setInterval(shine, 5 * 60 * 1000);
       })();
     </script>
   </body>
