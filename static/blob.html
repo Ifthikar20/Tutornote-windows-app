@@ -3,11 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <title>Tutornote tutor</title>
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; media-src 'self' file:" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; media-src 'self' file:; img-src 'self' file:" />
     <style>
       /*
-        The desktop companion's blob (src/main/companion.ts): a 64 point purple blob with the tutor
-        curled inside, floating over every app and every Space. It shows while the tutor is off
+        The desktop companion's blob (src/main/companion.ts): a 64 point purple ring with a pixel sky
+        for its face, the sky of the time of day, floating over every app and every Space. It shows while the tutor is off
         (resting, or blocked); a click turns the tutor on (it hops out and follows the cursor) and
         the blob goes, the lesson page's dock (its pause and ×) being the control while it is on.
         With a page too old to have that dock, the blob stays as an empty ring with a soft glow,
@@ -15,7 +15,7 @@
         click is never lost to a drag region); a right click shows its menu. Over it, its label
         shows beside it, in the room the app gives the window for it on the side with more space.
 
-        Looks: resting (the tutor inside), on (an empty, glowing ring: as it hops out, as it flies
+        Looks: resting (the sky inside), on (an empty, glowing ring: as it hops out, as it flies
         home, and with an older page), reading (the ring turns while a window is being read on this
         Mac), blocked (a small "!": Screen Recording is off), hidden (the ring fading out as the
         tutor turns on, before the app hides the window).
@@ -38,14 +38,18 @@
       body.held .blob svg { transform: scale(.96); }
       .disc { fill: var(--shell); stroke: var(--brand); stroke-width: 2.5; transition: fill .2s ease, stroke-width .2s ease; }
       .spin { fill: none; stroke: #c4b5fd; stroke-width: 3; stroke-dasharray: 26 144; stroke-linecap: round; opacity: 0; transform-origin: 32px 32px; }
-      .tutor { transform-origin: 32px 34px; transition: opacity .2s ease, transform .3s cubic-bezier(.2, .9, .3, 1.2); }
+      .face { transform-origin: 32px 34px; transition: opacity .2s ease, transform .3s cubic-bezier(.2, .9, .3, 1.2); }
+      /* The face (the founder, 2026-10-28: "instead of that smiley ... retro images ... if it's
+         morning, the daytime ... if it's night, the night"): a pixel sky for the time of day,
+         static/skies (the script at the end picks it), drawn with its pixels kept hard. */
+      .sky { image-rendering: pixelated; }
       .alert { opacity: 0; transition: opacity .2s ease; }
 
       /* On: the tutor has hopped out to the cursor; the blob is an empty ring with a soft glow
          (hidden: that ring, fading out). */
       body.on .disc, body.reading .disc, body.hidden .disc { fill: rgba(114, 50, 224, .1); stroke-width: 3; }
       body.on svg, body.reading svg, body.hidden svg { filter: drop-shadow(0 0 7px rgba(114, 50, 224, .55)) drop-shadow(0 4px 9px rgba(30, 16, 54, .2)); }
-      body.on .tutor, body.reading .tutor, body.hidden .tutor { opacity: 0; transform: scale(.4) translateY(-10px); }
+      body.on .face, body.reading .face, body.hidden .face { opacity: 0; transform: scale(.4) translateY(-10px); }
       /* Reading: the ring turns while a window is read on this Mac. */
       body.reading .spin { opacity: 1; animation: spin 1s linear infinite; }
       @keyframes spin { to { transform: rotate(360deg); } }
@@ -66,7 +70,7 @@
       body.side-right .label { display: block; left: 72px; }
 
       @media (prefers-reduced-motion: reduce) {
-        .tutor, .disc, .blob svg { transition: none; }
+        .face, .disc, .blob svg { transition: none; }
         body.reading .spin { animation: none; }
         body.pop .blob svg { animation: none; }
       }
@@ -77,24 +81,13 @@
     <div class="blob" id="blob" role="button" aria-label="Click to turn me on">
       <svg viewBox="0 0 64 64" aria-hidden="true">
         <defs>
-          <radialGradient id="skin" cx="38%" cy="32%" r="72%">
-            <stop offset="0" stop-color="#a47cf3" />
-            <stop offset="1" stop-color="#7232e0" />
-          </radialGradient>
+          <clipPath id="round"><circle cx="32" cy="32" r="26.8" /></clipPath>
         </defs>
         <circle class="disc" cx="32" cy="32" r="28" />
         <circle class="spin" cx="32" cy="32" r="28" />
-        <!-- The tutor, curled up inside: a round body, its tail curled round, its face. -->
-        <g class="tutor">
-          <path d="M44.5 47.5c4.6 1.1 8.4-1.6 8-5.6-.4-3.2-4.2-4.3-5.9-1.8" fill="none" stroke="#5b21b6" stroke-width="3.2" stroke-linecap="round" />
-          <path d="M32 13c10.5 0 18.5 8.3 18.5 18.8S42.4 51 32 51 13.5 42.3 13.5 31.8 21.5 13 32 13Z" fill="url(#skin)" />
-          <ellipse cx="25.6" cy="30" rx="4.1" ry="4.9" fill="#fff" />
-          <ellipse cx="38.4" cy="30" rx="4.1" ry="4.9" fill="#fff" />
-          <circle cx="26.4" cy="31" r="2.2" fill="#1e1036" />
-          <circle cx="39.2" cy="31" r="2.2" fill="#1e1036" />
-          <circle cx="21.5" cy="37.5" r="2.4" fill="#f0abfc" opacity=".55" />
-          <circle cx="42.5" cy="37.5" r="2.4" fill="#f0abfc" opacity=".55" />
-          <path d="M27.2 39.2c2.8 2.6 6.8 2.6 9.6 0" fill="none" stroke="#fff" stroke-width="2.3" stroke-linecap="round" />
+        <!-- Its face: a pixel sky, inside the ring (the script at the end picks day, evening or night). -->
+        <g class="face">
+          <image class="sky" id="sky" href="skies/day.png" x="5" y="5" width="54" height="54" clip-path="url(#round)" preserveAspectRatio="xMidYMid slice" />
         </g>
         <!-- Blocked: Screen Recording is off. -->
         <g class="alert">
@@ -171,6 +164,23 @@
         document.addEventListener("keydown", function (e) {
           if (e.key === "Enter" || e.key === " ") bridge.toggle();
         });
+      })();
+    </script>
+    <script>
+      // The face for the time of day: the day sky from 6 in the morning, the sunset from 5 in the
+      // evening, the stars from 8 at night; looked at again each minute.
+      (function () {
+        var sky = document.getElementById("sky");
+        var shown = "";
+        function pick() {
+          var h = new Date().getHours();
+          var now = h >= 6 && h < 17 ? "day" : h >= 17 && h < 20 ? "evening" : "night";
+          if (now === shown) return;
+          shown = now;
+          sky.setAttribute("href", "skies/" + now + ".png");
+        }
+        pick();
+        setInterval(pick, 60 * 1000);
       })();
     </script>
   </body>
