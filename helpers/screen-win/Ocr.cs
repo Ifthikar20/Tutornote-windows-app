@@ -17,8 +17,10 @@ namespace Tutornote.Screen
     public static class Ocr
     {
         static readonly object Gate = new object();
-        static OcrEngine engine;
-        static bool tried;
+        // (the engine is made once, under a lock of its own: asking for it never waits behind a read)
+        static readonly object EngineGate = new object();
+        static volatile OcrEngine engine;
+        static volatile bool tried;
 
         public static string Language
         {
@@ -27,12 +29,13 @@ namespace Tutornote.Screen
 
         public static OcrEngine Engine()
         {
-            lock (Gate)
+            if (tried) return engine;
+            lock (EngineGate)
             {
                 if (!tried)
                 {
-                    tried = true;
                     try { engine = OcrEngine.TryCreateFromUserProfileLanguages(); } catch (Exception) { engine = null; }
+                    tried = true;
                 }
                 return engine;
             }
@@ -57,17 +60,28 @@ namespace Tutornote.Screen
          */
         public static List<OcrLine> Read(Picture pic, int left, int top, double scale)
         {
+            return TryRead(pic, left, top, scale, Timeout.Infinite);
+        }
+
+        /**
+         * Read, waiting at most `waitMs` for the reader another read is using (a tap's verdict has a
+         * budget, as on the Mac: TEXT_BUDGET_MS). Null when it stayed busy that long.
+         */
+        public static List<OcrLine> TryRead(Picture pic, int left, int top, double scale, int waitMs)
+        {
             var lines = new List<OcrLine>();
             var e = Engine();
             if (e == null || pic == null || pic.W < 8 || pic.H < 8) return lines;
             int max = (int)OcrEngine.MaxImageDimension;
             while (pic.W > max || pic.H > max) { pic = Capture.Half(pic); scale *= 2; }
             OcrResult result;
-            lock (Gate)
+            if (!Monitor.TryEnter(Gate, waitMs)) return null;
+            try
             {
                 var bitmap = SoftwareBitmap.CreateCopyFromBuffer(CryptographicBuffer.CreateFromByteArray(pic.Bgra), BitmapPixelFormat.Bgra8, pic.W, pic.H, BitmapAlphaMode.Premultiplied);
                 result = Wait(e.RecognizeAsync(bitmap));
             }
+            finally { Monitor.Exit(Gate); }
             foreach (var line in result.Lines)
             {
                 var l = new OcrLine { T = line.Text };

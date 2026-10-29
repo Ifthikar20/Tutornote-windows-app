@@ -136,7 +136,7 @@ const LABELS = {
   on: "Click to stop",
   blocked: "Tutornote needs Screen Recording. Click to fix.",
   // (no screen helper in this build, or a Mac older than macOS 14: Screen Recording is not it)
-  unavailable: "Tutornote can't read other apps on this Mac.",
+  unavailable: process.platform === "win32" ? "Tutornote can't read other apps on this computer." : "Tutornote can't read other apps on this Mac.",
 } as const;
 
 let blob: BrowserWindow | null = null;
@@ -263,6 +263,32 @@ function tellBlob(extra: { pop?: boolean } = {}, look: BlobLook = blobLook()): v
   else send();
 }
 
+/**
+ * The bubble pop as the tutor hops out of the blob and as it lands back in it (static/sounds/
+ * bubble_pop.mp3, played by the blob's page). An interface sound, so it keeps to the web app's
+ * Sounds switch (lib/sound/pref.ts: "an-sounds" set to "off" in the app's own storage), read from
+ * the lesson's window, which is the app's origin; with no page to ask, it plays.
+ */
+async function soundsOn(): Promise<boolean> {
+  const w = overlayWindow();
+  if (!w || w.isDestroyed() || w.webContents.isLoading()) return true;
+  try {
+    const said: unknown = await w.webContents.executeJavaScript(
+      '(() => { try { return localStorage.getItem("an-sounds") !== "off"; } catch (e) { return true; } })()',
+    );
+    return said !== false;
+  } catch {
+    return true;
+  }
+}
+
+function popSound(): void {
+  void soundsOn().then((ok) => {
+    const b = liveBlob();
+    if (ok && b) b.webContents.send("blob:sound");
+  });
+}
+
 /** The tab bar's button: the blob hidden, shown, or the tutor on. */
 function tellToolbar(): void {
   appEvents.emit("companion-state", !blobShown ? "hidden" : on ? "on" : "shown");
@@ -286,7 +312,11 @@ function syncBlobWindow(): void {
       // (the ring, as before its fade began; turnOff gives it its resting look as the tutor lands)
       tellBlob({}, "on");
     }
-    if (!b.isVisible()) b.showInactive();
+    if (!b.isVisible()) {
+      b.showInactive();
+      // (Windows has one always-on-top band: the blob back at its top, over the lesson's layer)
+      if (process.platform === "win32") b.setAlwaysOnTop(true, "floating", 2);
+    }
   } else if (b.isVisible() && !blobGoing) {
     blobGoing = setTimeout(() => {
       blobGoing = undefined;
@@ -308,7 +338,8 @@ function ensureBlob(): BrowserWindow {
     // Spotlight's is), so the student's keys stay with the app they are reading. focusable false
     // alone does not do that on a Mac: Electron then only keeps the window from taking the keys,
     // and the click still brings Tutornote forward (Electron 44's NativeWindowMac).
-    type: "panel",
+    // (Windows has no panel: a tool window stays out of the taskbar and Alt+Tab)
+    type: process.platform === "win32" ? "toolbar" : "panel",
     frame: false,
     transparent: true,
     backgroundColor: "#00000000",
@@ -328,6 +359,8 @@ function ensureBlob(): BrowserWindow {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      // (its pop as the tutor hops out and lands back: popSound; no click asks for it)
+      autoplayPolicy: "no-user-gesture-required",
     },
   });
   // Above the lesson's window (floating +1) and its board (+0).
@@ -366,7 +399,10 @@ function showBlob(): void {
   tellBlob({ pop: !wasShown });
   // (not while the tutor is on with a page that has its own dock)
   const show = (): void => {
-    if (blobWanted() && !b.isDestroyed()) b.showInactive();
+    if (!blobWanted() || b.isDestroyed()) return;
+    b.showInactive();
+    // (Windows has one always-on-top band: the blob at its top, over the lesson's layer)
+    if (process.platform === "win32") b.setAlwaysOnTop(true, "floating", 2);
   };
   if (b.webContents.isLoading()) b.webContents.once("did-finish-load", show);
   else show();
@@ -559,6 +595,8 @@ async function turnOn(): Promise<void> {
     greeted = false;
     const first = !companionTipped();
     showCompanionOverlay(area, blobCentre(), first);
+    // (the tutor hops out of the blob: its pop)
+    popSound();
     if (first) markCompanionTipped();
     stopKey = "";
     observeKey = "";
@@ -596,7 +634,8 @@ function turnOff(): void {
   }
   closeScreenTeach();
   companionWentOff();
-  companionWatch(false, []);
+  // (Tutornote's own floating windows stay known: the helper looks through only the lesson's layer)
+  companionWatch(false, stopIds());
   observeWindows([]);
   clearCaches();
   clearTimeout(offTimer);
@@ -605,7 +644,11 @@ function turnOff(): void {
   }, HOME_MS);
   // The tutor is back in the blob once it has flown there.
   clearTimeout(lookTimer);
-  lookTimer = setTimeout(() => tellBlob(wasAway ? { pop: true } : {}), HOME_LOOK_MS);
+  lookTimer = setTimeout(() => {
+    tellBlob(wasAway ? { pop: true } : {});
+    // (the tutor lands back in the blob: its pop)
+    popSound();
+  }, HOME_LOOK_MS);
   tellToolbar();
   console.log("[companion] off");
 }
@@ -632,7 +675,7 @@ function setHeld(value: boolean): void {
     pendingRead = null;
     carefulReads.clear();
     cardTap = null;
-    companionWatch(false, []);
+    companionWatch(false, stopIds());
     stopKey = "";
     observeKey = "";
     refreshObserve();
@@ -752,6 +795,14 @@ function onOver(over: ScreenOver): void {
   sendToPage("screen-teach:over", { window });
   refreshObserve();
   const kept = glances.get(window);
+  // A window moved since its glance (dragged by its title bar, same size: no new look) is read
+  // again where it is now, or a tap there would be judged against words that are no longer there.
+  const was = kept?.read.frame;
+  const f = over.frame;
+  if (kept && was && f && (Math.abs(was.x - f.x) > 1 || Math.abs(was.y - f.y) > 1 || Math.abs(was.w - f.w) > 1 || Math.abs(was.h - f.h) > 1)) {
+    kept.stale = true;
+    markReadStale(window);
+  }
   if (kept && !kept.stale) {
     if (!pageHas.has(window)) sendGlance(window, kept);
     return;
@@ -1339,6 +1390,12 @@ export function installCompanion(): void {
   // The lesson's board window is no BrowserWindow (it raises no browser-window-created): it says
   // itself when it shows. (In a tab of the main window it is the main window's.)
   appEvents.on("screen-board-shown", () => setImmediate(() => sendStop()));
+  // Windows has one always-on-top band (the levels' order is the Mac's only): each time the board
+  // shows or comes forward, the blob goes back above it and the lesson's window (screenTeach.ts).
+  appEvents.on("screen-board-raised", () => {
+    const b = liveBlob();
+    if (process.platform === "win32" && b && b.isVisible()) b.setAlwaysOnTop(true, "floating", 2);
+  });
   // A display unplugged or rearranged: the blob stays on a screen.
   screen.on("display-removed", () => reclampBlob());
   screen.on("display-metrics-changed", () => reclampBlob());

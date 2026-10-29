@@ -779,6 +779,16 @@ export function unwatchWindow(): void {
 }
 
 /**
+ * Windows: bring a window read before to the front (the board's "Back to {app}", and the keys given
+ * back after a question typed to the tutor). The helper does it only while Tutornote is in front,
+ * handing the front over through Tutornote's own thread, as Windows allows (Program.cs BringForward).
+ * Nothing on the Mac, which uses `open -b`.
+ */
+export function bringWindowForward(window: number): void {
+  if (PIXELS) command({ cmd: "front", window });
+}
+
+/**
  * The desktop companion on or off (companion.ts): the helper says which window the cursor is over
  * ("over"), and hears presses, taps and scrolls on any ordinary window (watchEvents). `stop`: the
  * CGWindowIDs of Tutornote's own windows that the helper cannot tell by their app (the blob, the

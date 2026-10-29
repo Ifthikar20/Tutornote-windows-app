@@ -25,5 +25,9 @@ contextBridge.exposeInMainWorld(
     menu: (): void => ipcRenderer.send("blob:menu"),
     /** The pointer came over the blob, or left it: its label shows, or goes. */
     hover: (on: unknown): void => ipcRenderer.send("blob:hover", on === true),
+    /** The tutor hopped out of the blob, or landed back in it: its bubble pop plays. */
+    onSound: (play: () => void): void => {
+      ipcRenderer.on("blob:sound", () => play());
+    },
   }),
 );

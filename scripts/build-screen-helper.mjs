@@ -42,6 +42,26 @@ if (fs.existsSync(out) && fs.statSync(out).mtimeMs > newest && !process.argv.inc
 }
 
 fs.mkdirSync(outDir, { recursive: true });
+// A helper the app is running keeps its exe locked, but Windows lets a running exe be renamed: the old
+// one is moved aside (and removed on a later build, once nothing runs it), and the app starts the new
+// one the next time it starts its helper.
+for (const name of fs.readdirSync(outDir)) {
+  if (/^tutornote-screen\.old-\d+\.exe$/.test(name)) {
+    try {
+      fs.unlinkSync(path.join(outDir, name));
+    } catch {
+      // (still running)
+    }
+  }
+}
+if (fs.existsSync(out)) {
+  try {
+    fs.unlinkSync(out);
+  } catch {
+    fs.renameSync(out, path.join(outDir, `tutornote-screen.old-${Date.now()}.exe`));
+    console.log("screen helper: the running one was moved aside; the app starts the new one next time");
+  }
+}
 const refs = [
   path.join(fw, "System.dll"),
   path.join(fw, "System.Core.dll"),

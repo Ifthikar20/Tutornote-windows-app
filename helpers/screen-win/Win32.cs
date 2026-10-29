@@ -76,7 +76,10 @@ namespace Tutornote.Screen
         public const int SRCCOPY = 0x00CC0020, CAPTUREBLT = 0x40000000, HALFTONE = 4;
         public const uint WM_INPUT = 0x00FF, WM_MOUSEWHEEL = 0x020A, WM_MOUSEHWHEEL = 0x020E, WM_QUIT = 0x0012;
         public const uint RIDEV_INPUTSINK = 0x100, RID_INPUT = 0x10000003;
-        public const ushort RI_MOUSE_LEFT_DOWN = 0x0001, RI_MOUSE_LEFT_UP = 0x0002, RI_MOUSE_WHEEL = 0x0400, RI_MOUSE_HWHEEL = 0x0800;
+        public const ushort RI_MOUSE_LEFT_DOWN = 0x0001, RI_MOUSE_LEFT_UP = 0x0002, RI_MOUSE_RIGHT_DOWN = 0x0004, RI_MOUSE_RIGHT_UP = 0x0008;
+        public const ushort RI_MOUSE_WHEEL = 0x0400, RI_MOUSE_HWHEEL = 0x0800;
+        public const int SM_SWAPBUTTON = 23;
+        public const uint MONITOR_DEFAULTTONEAREST = 2;
         public const uint INPUT_MOUSE = 0, INPUT_KEYBOARD = 1, MOUSEEVENTF_WHEEL = 0x0800, KEYEVENTF_EXTENDEDKEY = 0x1, KEYEVENTF_KEYUP = 0x2;
         public const int VK_LBUTTON = 0x01, VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12, VK_LWIN = 0x5B, VK_RWIN = 0x5C;
         public const int IDC_HAND = 32649, SM_CXDOUBLECLK = 36, SM_CYDOUBLECLK = 37;
@@ -106,6 +109,9 @@ namespace Tutornote.Screen
         [DllImport("user32.dll")] public static extern uint GetDoubleClickTime();
         [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
         [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
+        [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr h, uint flags);
+        [DllImport("shcore.dll")] public static extern int GetDpiForMonitor(IntPtr monitor, int type, out uint dpiX, out uint dpiY);
+        [DllImport("user32.dll")] public static extern bool PhysicalToLogicalPointForPerMonitorDPI(IntPtr h, ref POINT p);
         [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
         [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
         [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr h);
@@ -182,13 +188,53 @@ namespace Tutornote.Screen
             return r;
         }
 
-        /** The window's scale: 1 at 96 dpi, 1.5 at 144, 2 at 192. */
+        /** The scale of the display a window is on: 1 at 96 dpi, 1.5 at 144, 2 at 192. Physical pixels
+         *  per point, whatever the window itself was written for (an old app that knows no scaling
+         *  says 96 dpi of itself, and Windows stretches it). */
         public static double ScaleOf(IntPtr h)
         {
-            uint dpi = 0;
-            try { dpi = GetDpiForWindow(h); } catch (EntryPointNotFoundException) { }
+            uint dpi = MonitorDpi(h);
             return dpi > 0 ? dpi / 96.0 : 1.0;
         }
+
+        public static uint MonitorDpi(IntPtr h)
+        {
+            uint x = 0, y;
+            try { GetDpiForMonitor(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), 0, out x, out y); } catch (Exception) { x = 0; }
+            if (x == 0) try { x = GetDpiForWindow(h); } catch (EntryPointNotFoundException) { }
+            return x;
+        }
+
+        /** A window Windows stretches to its display's scale (an app that knows no scaling, or one on a
+         *  display of another scale than it was told): its own picture is at its smaller size. */
+        public static bool Stretched(IntPtr h)
+        {
+            uint own = 0;
+            try { own = GetDpiForWindow(h); } catch (EntryPointNotFoundException) { }
+            uint display = MonitorDpi(h);
+            return own > 0 && display > 0 && own != display;
+        }
+
+        /** The primary button is the right one when the student swapped them (left-handed). */
+        public static bool ButtonsSwapped() { return GetSystemMetrics(SM_SWAPBUTTON) != 0; }
+
+        [DllImport("user32.dll")] public static extern bool SystemParametersInfo(uint action, uint param, ref uint value, uint winIni);
+        const uint SPI_GETWHEELSCROLLLINES = 0x0068;
+
+        /** Points of content one wheel notch moves, as Windows is set ("lines per notch", 3 lines of
+         *  about 33 points by default, or a whole page when set to a screen at a time). */
+        public static double WheelPoints(RECT frame, double scale)
+        {
+            uint lines = 3;
+            try { if (!SystemParametersInfo(SPI_GETWHEELSCROLLLINES, 0, ref lines, 0)) lines = 3; } catch (Exception) { lines = 3; }
+            if (lines == 0xFFFFFFFF) return Math.Max(100, frame.Height / Math.Max(1, scale) * 0.9);
+            return Math.Max(1, lines) * 100.0 / 3.0;
+        }
+
+        [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint from, uint to, bool attach);
+        [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+        [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+        [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
 
         public static string ExePathOf(uint pid)
         {

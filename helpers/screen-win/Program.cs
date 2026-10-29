@@ -175,6 +175,9 @@ namespace Tutornote.Screen
                 case "observe":
                     Watcher.Observe(J.Nums(cmd, "windows"));
                     break;
+                case "front":
+                    BringForward(new IntPtr((long)J.Num(cmd, "window", 0)));
+                    break;
                 case "chord":
                     // Control+Option has no Windows twin (Ctrl+Alt is AltGr on many keyboards): no chord yet.
                     if (J.Bool(cmd, "on"))
@@ -184,6 +187,33 @@ namespace Tutornote.Screen
                     if (id >= 0) Out.Error(id, "bad_command");
                     Out.Log("unknown command");
                     break;
+            }
+        }
+
+        /**
+         * A window read before, brought to the front: the board's "Back to {app}", and the keys given
+         * back after a question typed to the tutor. Only while Tutornote has the front (it never takes
+         * it from another app). Windows refuses a plain SetForegroundWindow from a background program,
+         * so the helper joins the foreground thread (Tutornote's) for the hand-over, as Windows allows.
+         */
+        static void BringForward(IntPtr h)
+        {
+            if (!Win32.IsWindow(h)) return;
+            IntPtr fg = Win32.GetForegroundWindow();
+            uint fgPid;
+            uint fgThread = Win32.GetWindowThreadProcessId(fg, out fgPid);
+            if (fgPid != ParentPid) return;
+            if (Win32.IsIconic(h)) Win32.ShowWindow(h, 9);
+            uint me = Win32.GetCurrentThreadId();
+            bool joined = fgThread != 0 && fgThread != me && Win32.AttachThreadInput(me, fgThread, true);
+            try
+            {
+                Win32.BringWindowToTop(h);
+                if (!Win32.SetForegroundWindow(h)) Out.Log("front: Windows kept the front where it was");
+            }
+            finally
+            {
+                if (joined) Win32.AttachThreadInput(me, fgThread, false);
             }
         }
     }
@@ -244,7 +274,7 @@ namespace Tutornote.Screen
         {
             RECT frame = Win32.FrameOf(h);
             AppInfo app = Apps.OfWindow(h);
-            string title = Win32.TextOf(h);
+            string title = Apps.TabTitle(app, Win32.TextOf(h));
             long t0 = Clock.Ms;
             bool fromScreen;
             Picture pic = Capture.Window(h, frame, out fromScreen);
@@ -421,19 +451,33 @@ namespace Tutornote.Screen
             Win32.SendInput(2, new[] { down, up }, System.Runtime.InteropServices.Marshal.SizeOf(typeof(INPUT)));
         }
 
-        /** A scroll of `dy` points (positive shows later content), in wheel notches of about 100 points, 12 ms apart.
-         *  Over the window, the wheel goes where the cursor is; elsewhere, to the window at `at` directly. */
+        /**
+         * A scroll of `dy` points (positive shows later content) at `at`, where the Mac posts its wheel:
+         * a notch (120 wheel units) per WheelPoints of content, in steps of one notch at most, 12 ms apart. The wheel goes to
+         * the window at `at` when it is part of the one being read (else to that window itself), so a
+         * sidebar under the cursor or another app lying over `at` never takes it. Only with the cursor
+         * resting on `at` is it the system's own wheel, which goes where the cursor is.
+         */
         static void Scroll(IntPtr h, POINT at, double dy, long id)
         {
-            int notches = Math.Max(1, (int)Math.Round(Math.Abs(dy) / 100.0));
-            int delta = dy >= 0 ? -120 : 120;
+            // (120 wheel units are one notch, which moves as many lines as Windows is set to)
+            int total = (int)Math.Round(Math.Abs(dy) / Win32.WheelPoints(Win32.FrameOf(h), Win32.ScaleOf(h)) * 120);
+            int sign = dy >= 0 ? -1 : 1;
             POINT cursor;
             Win32.GetCursorPos(out cursor);
-            bool overIt = Windows.At(cursor, null, Program.ParentPid, null).Window == h;
+            bool atCursor = Math.Abs(cursor.X - at.X) <= 4 && Math.Abs(cursor.Y - at.Y) <= 4
+                && Windows.At(cursor, null, Program.ParentPid, null).Window == h;
             IntPtr target = Win32.WindowFromPoint(at);
-            for (int i = 0; i < notches && !IsCancelled(id); i++)
+            if (target == IntPtr.Zero || Win32.GetAncestor(target, Win32.GA_ROOT) != h) target = h;
+            // (a window Windows stretches is told the point in its own, smaller coordinates)
+            POINT posted = at;
+            try { Win32.PhysicalToLogicalPointForPerMonitorDPI(target, ref posted); } catch (EntryPointNotFoundException) { posted = at; }
+            while (total > 0 && !IsCancelled(id))
             {
-                if (overIt)
+                int step = Math.Min(120, total);
+                total -= step;
+                int delta = sign * step;
+                if (atCursor)
                 {
                     var wheel = new INPUT { type = Win32.INPUT_MOUSE };
                     wheel.u.mi = new MOUSEINPUT { mouseData = delta, dwFlags = Win32.MOUSEEVENTF_WHEEL, dwExtraInfo = POSTED_BY_US };
@@ -442,8 +486,8 @@ namespace Tutornote.Screen
                 else
                 {
                     long w = ((long)(short)delta) << 16;
-                    long l = ((long)(ushort)at.Y << 16) | (ushort)at.X;
-                    Win32.PostMessage(target != IntPtr.Zero ? target : h, Win32.WM_MOUSEWHEEL, new IntPtr(w), new IntPtr(l));
+                    long l = ((long)(ushort)posted.Y << 16) | (ushort)posted.X;
+                    Win32.PostMessage(target, Win32.WM_MOUSEWHEEL, new IntPtr(w), new IntPtr(l));
                 }
                 Thread.Sleep(12);
             }

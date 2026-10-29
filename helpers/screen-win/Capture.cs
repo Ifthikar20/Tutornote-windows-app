@@ -51,11 +51,11 @@ namespace Tutornote.Screen
             {
                 bool ok;
                 if (viaPrint) ok = Win32.PrintWindow(window, mem, Win32.PW_RENDERFULLCONTENT);
-                else if (dw == w && dh == h) ok = Win32.BitBlt(mem, 0, 0, w, h, srcDc, sx, sy, Win32.SRCCOPY | Win32.CAPTUREBLT);
+                else if (dw == w && dh == h) ok = Win32.BitBlt(mem, 0, 0, w, h, srcDc, sx, sy, Win32.SRCCOPY);
                 else
                 {
                     Win32.SetStretchBltMode(mem, Win32.HALFTONE);
-                    ok = Win32.StretchBlt(mem, 0, 0, dw, dh, srcDc, sx, sy, w, h, Win32.SRCCOPY | Win32.CAPTUREBLT);
+                    ok = Win32.StretchBlt(mem, 0, 0, dw, dh, srcDc, sx, sy, w, h, Win32.SRCCOPY);
                 }
                 if (!ok) return null;
                 var pic = new Picture(dw, dh);
@@ -84,10 +84,21 @@ namespace Tutornote.Screen
             fromScreen = false;
             RECT whole;
             Win32.GetWindowRect(h, out whole);
-            IntPtr screen = Win32.GetDC(IntPtr.Zero);
             Picture pic;
-            try { pic = FromDc(screen, 0, 0, whole.Width, whole.Height, whole.Width, whole.Height, true, h); }
-            finally { Win32.ReleaseDC(IntPtr.Zero, screen); }
+            if (Win32.Stretched(h))
+            {
+                // A window Windows stretches (an app that knows no scaling) pictures itself at its own,
+                // smaller size, and every box would land short of its place: that picture is stretched
+                // to the window's size on the screen, as Windows shows it. (Not the screen's picture:
+                // a window lying over it would be read as its words.)
+                pic = PrintStretched(h, whole);
+            }
+            else
+            {
+                IntPtr screen = Win32.GetDC(IntPtr.Zero);
+                try { pic = FromDc(screen, 0, 0, whole.Width, whole.Height, whole.Width, whole.Height, true, h); }
+                finally { Win32.ReleaseDC(IntPtr.Zero, screen); }
+            }
             if (pic != null)
             {
                 pic = Crop(pic, frame.Left - whole.Left, frame.Top - whole.Top, frame.Width, frame.Height);
@@ -95,6 +106,38 @@ namespace Tutornote.Screen
             }
             fromScreen = true;
             return Screen(frame, frame.Width, frame.Height);
+        }
+
+        /** A stretched window's own picture (at its own dpi, in the top left of a whole-size bitmap),
+         *  scaled up to its whole size on the screen. Null when it cannot be had. */
+        static Picture PrintStretched(IntPtr h, RECT whole)
+        {
+            uint own = 0;
+            try { own = Win32.GetDpiForWindow(h); } catch (EntryPointNotFoundException) { }
+            uint display = Win32.MonitorDpi(h);
+            if (own == 0 || display == 0 || whole.Width <= 0 || whole.Height <= 0) return null;
+            int lw = Math.Max(1, (int)Math.Round(whole.Width * (double)own / display));
+            int lh = Math.Max(1, (int)Math.Round(whole.Height * (double)own / display));
+            IntPtr screen = Win32.GetDC(IntPtr.Zero);
+            IntPtr small = IntPtr.Zero, dib = IntPtr.Zero, old = IntPtr.Zero;
+            try
+            {
+                small = Win32.CreateCompatibleDC(screen);
+                var bmi = new BITMAPINFOHEADER { biSize = Marshal.SizeOf(typeof(BITMAPINFOHEADER)), biWidth = whole.Width, biHeight = -whole.Height, biPlanes = 1, biBitCount = 32 };
+                IntPtr bits;
+                dib = Win32.CreateDIBSection(small, ref bmi, 0, out bits, IntPtr.Zero, 0);
+                if (dib == IntPtr.Zero) return null;
+                old = Win32.SelectObject(small, dib);
+                if (!Win32.PrintWindow(h, small, Win32.PW_RENDERFULLCONTENT)) return null;
+                return FromDc(small, 0, 0, lw, lh, whole.Width, whole.Height, false, IntPtr.Zero);
+            }
+            finally
+            {
+                if (old != IntPtr.Zero) Win32.SelectObject(small, old);
+                if (dib != IntPtr.Zero) Win32.DeleteObject(dib);
+                if (small != IntPtr.Zero) Win32.DeleteDC(small);
+                Win32.ReleaseDC(IntPtr.Zero, screen);
+            }
         }
 
         public static Picture Crop(Picture p, int x, int y, int w, int h)
@@ -185,6 +228,25 @@ namespace Tutornote.Screen
             long sum = 0; int n = 0;
             for (int y = top; y < bottom; y++)
                 for (int x = 0; x < a.W; x++) { int i = y * a.W + x; sum += Math.Abs(a.G[i] - b.G[i]); n++; }
+            return n == 0 ? 0 : (double)sum / n;
+        }
+
+        /**
+         * The look's middle rows (EDGE_SHARE left out top and bottom) away from the band of rows
+         * rowFrom..rowTo around a tap, across the whole width: what a tap did elsewhere, as the Mac
+         * measures it (a reader's bars fading at the top or bottom are no change elsewhere).
+         */
+        public static double MiddleAway(Look a, Look b, int rowFrom, int rowTo)
+        {
+            if (a == null || b == null) return 255;
+            if (a.W != b.W || a.H != b.H) return 255;
+            int top = (int)(a.H * EDGE_SHARE), bottom = a.H - top;
+            long sum = 0; int n = 0;
+            for (int y = top; y < bottom; y++)
+            {
+                if (y >= rowFrom && y <= rowTo) continue;
+                for (int x = 0; x < a.W; x++) { int i = y * a.W + x; sum += Math.Abs(a.G[i] - b.G[i]); n++; }
+            }
             return n == 0 ? 0 : (double)sum / n;
         }
 

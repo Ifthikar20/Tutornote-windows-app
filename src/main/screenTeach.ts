@@ -55,6 +55,7 @@ import { openExternal } from "./links";
 import { watchLessonAudio } from "./media";
 import {
   accessibilityAllowed,
+  bringWindowForward,
   chordWatch,
   hideFromCapture,
   observeWindows,
@@ -717,9 +718,10 @@ function hostOptions(): BaseWindowConstructorOptions {
     height: 640,
     minWidth: BOARD_MIN.width,
     minHeight: BOARD_MIN.height,
-    // The real traffic lights in the board's own 38 px head (its .guide-board-head).
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 14, y: 12 },
+    // The real traffic lights in the board's own 38 px head (its .guide-board-head). Windows: its
+    // own title bar, with close and maximise (the page draws no buttons of its own: it counts on
+    // the Mac's lights).
+    ...(process.platform === "darwin" ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 14, y: 12 } } : {}),
     resizable: true,
     movable: true,
     minimizable: false,
@@ -729,6 +731,17 @@ function hostOptions(): BaseWindowConstructorOptions {
     hasShadow: true,
     backgroundColor: boardColor,
   };
+}
+
+/** Windows has one always-on-top band, and the levels' order (blob over the lesson's window over
+ *  the board) is the Mac's only: the board, made after the lesson's window and raised by each click
+ *  on it, would cover the pointer, the caption, the dock and the card. Each time the board shows or
+ *  comes forward, the lesson's window (and the blob: companion.ts) go back above it. */
+function overlayAboveBoard(): void {
+  if (process.platform !== "win32") return;
+  const w = live();
+  if (w && w.isVisible()) w.setAlwaysOnTop(true, "floating", 1);
+  appEvents.emit("screen-board-raised");
 }
 
 /** The view fills its window's content (after every move into it: a view keeps the bounds it had). */
@@ -764,6 +777,8 @@ function adoptBoard(opener: BrowserWindow, options: BrowserWindowConstructorOpti
   boardIgnoring = false;
   applyMouse();
   host.setAlwaysOnTop(true, "floating", 0);
+  overlayAboveBoard();
+  host.on("focus", overlayAboveBoard);
   // Over a full-screen app's Space too, as the lesson's window (ensureWindow says what that costs:
   // once per window, and the board is kept for the lesson window's life).
   host.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -969,10 +984,12 @@ function applyZoom(): void {
   if (boardFull && host.isVisible() && !host.isMaximized()) {
     noteBoardPlace();
     host.maximize();
+    overlayAboveBoard();
   } else if (!boardFull && host.isMaximized()) {
     // (Make smaller on a zoomed board: the button pressed is no longer on it once it is smaller)
     noteBoardPlace();
     host.unmaximize();
+    overlayAboveBoard();
   }
 }
 
@@ -1055,6 +1072,7 @@ function syncBoard(): void {
         placedRun = lesson.run;
       }
       host.showInactive();
+      overlayAboveBoard();
       boardAt = host.getBounds();
       applyZoom();
       // (a window made by this module raises no browser-window-created: companion.ts hears it here)
@@ -1199,8 +1217,10 @@ function onFreshInTab(raise: boolean): void {
   if (!raise || !lesson || coversReading(mainWindowLook(), reading(lesson))) return;
   if (!boardTabActive()) selectBoardTab({ focus: false });
   if (main.isVisible() && !main.isMinimized()) {
-    // (in front without the keys, as explain.ts gives the window back)
-    main.showInactive();
+    // (in front without the keys, as explain.ts gives the window back; on Windows showInactive
+    // leaves a window that is already shown where it is, so it is raised instead)
+    if (process.platform === "win32") main.moveTop();
+    else main.showInactive();
     mainOnTop = true;
   }
 }
@@ -1319,6 +1339,12 @@ export const boardPlaceNow = (): BoardWhere | null => (inBar ? (liveBoard()?.pla
 /** Back to {app}: the app being read in front again (the student's click in Tutornote, which can
  *  hand the front on). */
 function backToApp(): void {
+  // (Windows: the helper brings the window being read forward; Tutornote, in front for the click,
+  // may hand the front to it)
+  if (process.platform === "win32") {
+    if (lesson) bringWindowForward(lesson.window);
+    return;
+  }
   const bundle = lesson?.bundle;
   if (!bundle || !/^[\w.-]{1,255}$/.test(bundle)) return;
   execFile("/usr/bin/open", ["-b", bundle], (error) => {
@@ -1448,7 +1474,8 @@ function ensureWindow(bounds: Rectangle): BrowserWindow {
     // the app being read stays in front, so they go back there once it gives them up
     // (screen-teach:want-keys). A plain window with focusable false still brings Tutornote
     // forward on a click (Electron 44 only keeps it from taking the keys).
-    type: "panel",
+    // (Windows has no panel: a tool window stays out of the taskbar and Alt+Tab)
+    type: process.platform === "win32" ? "toolbar" : "panel",
     frame: false,
     transparent: true,
     backgroundColor: "#00000000",
@@ -1549,7 +1576,7 @@ function ensureWindow(bounds: Rectangle): BrowserWindow {
   contents.on("render-process-gone", (_event, details) => {
     if (win !== created) return;
     console.warn(`[screen-teach] the lesson page stopped: ${details.reason}`);
-    failLesson("The lesson stopped. Press ⌃⌥E to start again.");
+    failLesson(process.platform === "win32" ? "The lesson stopped. Click the tutor button to start again." : "The lesson stopped. Press ⌃⌥E to start again.");
     dropWindow();
   });
   created.on("closed", () => {
@@ -2709,7 +2736,18 @@ function sendCompanion(): void {
  */
 export function showCompanionOverlay(work: Rectangle, from: Point, first: boolean): void {
   const w = ensureWindow(work);
-  w.setFocusable(false);
+  if (w.isFocusable()) {
+    if (process.platform === "win32" && w.isVisible()) {
+      // (Windows gives the keys of a window made unfocusable to the first window shown below it,
+      // the board during a lesson: out of the always-on-top band for that moment, that is the window
+      // already in front; then back above the board, and the blob above it)
+      w.setAlwaysOnTop(false);
+      w.setFocusable(false);
+      overlayAboveBoard();
+    } else {
+      w.setFocusable(false);
+    }
+  }
   const overlay = overlayRect(w);
   companion = { on: true, work, message: { on: true, overlay, from: { x: from.x - overlay.x, y: from.y - overlay.y }, first } };
   sendCompanion();
@@ -2745,6 +2783,8 @@ export function hideCompanionOverlay(): void {
   const w = live();
   if (!w) return;
   w.setFocusable(true);
+  // (Windows puts a focusable window back in the taskbar and Alt+Tab: this one stays out)
+  if (process.platform === "win32") w.setSkipTaskbar(true);
   if (lesson) return;
   interactive = false;
   applyMouse();
@@ -2978,6 +3018,28 @@ export function installScreenTeach(): void {
     const w = live();
     if (!fromLesson(event) || !w || typeof on !== "boolean" || !companion?.on) return;
     keysMovedAt = Date.now();
+    if (process.platform === "win32") {
+      // Windows hands the keys, as a window gives them up, to the first window shown below it: the
+      // board or the blob, never the app being read. Out of the always-on-top band for that moment,
+      // the window below is the app being read; the helper brings the lesson's window forward too.
+      // A focusable window is back in the taskbar on Windows: this one stays out.
+      if (on) {
+        w.setFocusable(true);
+        w.setSkipTaskbar(true);
+        w.focus();
+      } else if (w.isFocusable()) {
+        // (only when the lesson's window has the keys: the board, if the student went on to it,
+        // keeps them, and nothing is brought forward)
+        const had = w.isFocused();
+        const b = liveBoard();
+        const boardKeys = Boolean(b && b.place === "float" && b.host.isFocused());
+        if (!boardKeys) w.setAlwaysOnTop(false);
+        w.setFocusable(false);
+        overlayAboveBoard();
+        if (had && lesson) bringWindowForward(lesson.window);
+      }
+      return;
+    }
     w.setFocusable(on);
     if (on) w.focus();
     else if (w.isFocused()) w.blur();

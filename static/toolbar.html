@@ -119,7 +119,7 @@
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 3v10M3 8h10" /></svg>
       </button>
       <!-- Tutor on screen (src/main/companion.ts): turns the tutor on and off, which follows the cursor over any app. -->
-      <button class="icon" id="explain" type="button" title="Turn on the tutor (⌃⌥E)" aria-label="Turn on the tutor">
+      <button class="icon" id="explain" type="button" title="Turn on the tutor" aria-label="Turn on the tutor">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2.5 7.5 13l1.6-4.4L13.5 7Z" /><path d="M12.5 1.5v2M11.5 2.5h2" /></svg>
       </button>
     </div>
@@ -252,7 +252,8 @@
           var tutorOn = state.companion === "on";
           tutor.classList.toggle("on", tutorOn);
           // (its label says what a press does; no aria-pressed beside it)
-          tutor.title = tutorOn ? "Turn off the tutor (⌃⌥E)" : "Turn on the tutor (⌃⌥E)";
+          var key = typeof state.tutorKey === "string" ? state.tutorKey : " (⌃⌥E)";
+          tutor.title = (tutorOn ? "Turn off the tutor" : "Turn on the tutor") + key;
           tutor.setAttribute("aria-label", tutorOn ? "Turn off the tutor" : "Turn on the tutor");
           document.body.classList.toggle("modal", Boolean(state.scrim));
           if (state.scrim) root.style.setProperty("--scrim", state.scrim);
@@ -274,7 +275,7 @@
             el.classList.toggle("has-dot", Boolean(tab.dot));
             el.classList.toggle("active", tab.active);
             el.setAttribute("aria-selected", String(tab.active));
-            var tip = tab.away ? "The board is in its own window. Click to show it here (⌥⌘B)" : tab.title;
+            var tip = tab.away ? "The board is in its own window. Click to show it here" + (typeof state.boardKey === "string" ? state.boardKey : " (⌥⌘B)") : tab.title;
             if (el.title !== tip) el.title = tip;
             var label = tab.away ? tab.title + ", in its own window" : tab.dot ? tab.title + ", something new on it" : tab.title;
             if (el.getAttribute("aria-label") !== label) el.setAttribute("aria-label", label);

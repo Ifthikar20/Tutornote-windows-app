@@ -41,6 +41,13 @@ namespace Tutornote.Screen
             }
         }
 
+        /** Raw Input's flags for the primary button going down and up. */
+        public static void PrimaryFlags(bool swapped, out ushort down, out ushort up)
+        {
+            down = swapped ? Win32.RI_MOUSE_RIGHT_DOWN : Win32.RI_MOUSE_LEFT_DOWN;
+            up = swapped ? Win32.RI_MOUSE_RIGHT_UP : Win32.RI_MOUSE_LEFT_UP;
+        }
+
         // RAWINPUTHEADER is 24 bytes on 64-bit Windows (16 on 32-bit); RAWMOUSE follows it:
         // usFlags (2), padding (2), usButtonFlags (2), usButtonData (2), ulRawButtons (4), lLastX, lLastY, ulExtraInformation.
         static readonly int Header = IntPtr.Size == 8 ? 24 : 16;
@@ -67,8 +74,12 @@ namespace Tutornote.Screen
                         bool ours = extra == (uint)Turner.POSTED_BY_US.ToInt64();
                         try
                         {
-                            if ((flags & Win32.RI_MOUSE_LEFT_DOWN) != 0) Watcher.OnLeftDown();
-                            if ((flags & Win32.RI_MOUSE_LEFT_UP) != 0) Watcher.OnLeftUp();
+                            // Raw Input says the physical button: with the buttons swapped (left-handed),
+                            // the primary click is the right one.
+                            ushort down, up;
+                            PrimaryFlags(Win32.ButtonsSwapped(), out down, out up);
+                            if ((flags & down) != 0) Watcher.OnLeftDown();
+                            if ((flags & up) != 0) Watcher.OnLeftUp();
                             if (!ours && (flags & Win32.RI_MOUSE_WHEEL) != 0) Watcher.OnWheel(data, false);
                             if (!ours && (flags & Win32.RI_MOUSE_HWHEEL) != 0) Watcher.OnWheel(data, true);
                         }

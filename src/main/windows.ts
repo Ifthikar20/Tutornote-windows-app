@@ -700,6 +700,10 @@ export function createMainWindow(first: FirstPage = "app"): BrowserWindow {
       pages = [];
       activeId = 0;
       closingWindow = false;
+      // Windows: closing the main window quits, as a Windows app does. The tutor's hidden windows
+      // (its layer, the board, the blob) would otherwise keep Tutornote running out of sight, so
+      // window-all-closed never comes. (On the Mac the app stays, as Mac apps do.)
+      if (process.platform !== "darwin") app.quit();
     }
   });
   // (a board that floats while its lesson goes on keeps its away tab in the new window: screenTeach.ts)
@@ -1322,6 +1326,10 @@ function pushState(): void {
     insetRight: Math.max(8, captions),
     /** The tutor button: only where this machine can read other apps' windows (no Windows helper yet). */
     tutor: process.platform === "darwin" || screenReadingAvailable(),
+    /** The shortcut its title names: the Mac's ⌃⌥E (none on Windows, where Ctrl+Alt is AltGr). */
+    tutorKey: process.platform === "darwin" ? " (⌃⌥E)" : "",
+    /** The Pop Out Board / Show Board in Tutornote shortcut the Board tab's title names (menu.ts Alt+CmdOrCtrl+B). */
+    boardKey: process.platform === "darwin" ? " (⌥⌘B)" : " (Ctrl+Alt+B)",
     overSidebar: overSidebarLayout(),
     /** A dialog is open in the page: the bar takes its backdrop and stops taking clicks. */
     scrim: activePage()?.chrome?.scrim ?? "",

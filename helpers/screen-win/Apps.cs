@@ -37,7 +37,8 @@ namespace Tutornote.Screen
             { "vivaldi.exe", new[] { "com.vivaldi.Vivaldi", "Vivaldi" } },
             { "arc.exe", new[] { "company.thebrowser.Browser", "Arc" } },
             { "chromium.exe", new[] { "org.chromium.Chromium", "Chromium" } },
-            { "kindle.exe", new[] { "com.amazon.Kindle", "Kindle" } },
+            // (the Mac's page-turning Kindle: PAGE_APPS turns its pages by key, as Kindle for PC's are)
+            { "kindle.exe", new[] { "com.amazon.Lassen", "Kindle" } },
             { "acrord32.exe", new[] { "com.apple.Preview", "Adobe Acrobat Reader" } },
             { "acrobat.exe", new[] { "com.apple.Preview", "Adobe Acrobat" } },
             { "sumatrapdf.exe", new[] { "com.apple.Preview", "SumatraPDF" } },
@@ -122,6 +123,100 @@ namespace Tutornote.Screen
             return inner != 0 ? Of(inner) : app;
         }
 
+        // A browser's own ending of its window's title, after the tab's: " - Google Chrome", Edge's
+        // " and 2 more pages - Personal - Microsoft Edge" (the "Microsoft Edge" with a zero-width space).
+        static readonly System.Text.RegularExpressions.Regex EdgeName = new System.Text.RegularExpressions.Regex(
+            @" - Microsoft​?\s?Edge(?: Beta| Dev| Canary)?$");
+        static readonly System.Text.RegularExpressions.Regex EdgeMore = new System.Text.RegularExpressions.Regex(
+            @" and \d+ more pages?$");
+
+        /**
+         * Edge's window title, "<tab>[ and N more pages][ - <profile>] - Microsoft Edge", as the tab's
+         * own title. The tab's title may hold " - " parts of its own ("Cells - Wikipedia"), so a profile
+         * part is cut only when it is one of `profiles` (this PC's Edge profiles: EdgeProfiles).
+         */
+        public static string EdgeTitle(string title, ICollection<string> profiles)
+        {
+            string t = EdgeName.Replace(title, "");
+            if (t == title) return title;
+            foreach (string p in profiles)
+            {
+                if (string.IsNullOrEmpty(p)) continue;
+                string end = " - " + p;
+                if (t.EndsWith(end, StringComparison.Ordinal)) { t = t.Substring(0, t.Length - end.Length); break; }
+            }
+            return EdgeMore.Replace(t, "");
+        }
+
+        static readonly object ProfilesGate = new object();
+        static List<string> edgeProfiles;
+        static long edgeProfilesAt = -100000;
+
+        /** This PC's Edge profile names (Edge's own Local State file, read again at most every 30 s), and
+         *  the names Edge gives a private or guest window. */
+        public static List<string> EdgeProfiles()
+        {
+            lock (ProfilesGate)
+            {
+                if (edgeProfiles != null && Clock.Ms - edgeProfilesAt < 30000) return edgeProfiles;
+                var names = new List<string> { "InPrivate", "[InPrivate]", "Guest" };
+                string root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                foreach (string channel in new[] { "Edge", "Edge Beta", "Edge Dev", "Edge SxS" })
+                {
+                    string file = Path.Combine(root, "Microsoft", channel, "User Data", "Local State");
+                    try
+                    {
+                        if (!File.Exists(file)) continue;
+                        var state = new System.Web.Script.Serialization.JavaScriptSerializer { MaxJsonLength = int.MaxValue }
+                            .Deserialize<Dictionary<string, object>>(File.ReadAllText(file));
+                        object profile, cache;
+                        if (!state.TryGetValue("profile", out profile) || !(profile is Dictionary<string, object>)) continue;
+                        if (!((Dictionary<string, object>)profile).TryGetValue("info_cache", out cache) || !(cache is Dictionary<string, object>)) continue;
+                        foreach (object entry in ((Dictionary<string, object>)cache).Values)
+                        {
+                            var e = entry as Dictionary<string, object>;
+                            object name;
+                            if (e != null && e.TryGetValue("name", out name) && name is string && ((string)name).Length > 0 && !names.Contains((string)name))
+                                names.Add((string)name);
+                        }
+                    }
+                    catch (Exception) { }
+                }
+                // (longest first: "Work (2)" before "Work")
+                names.Sort((a, b) => b.Length.CompareTo(a.Length));
+                edgeProfiles = names;
+                edgeProfilesAt = Clock.Ms;
+                return names;
+            }
+        }
+        static readonly System.Text.RegularExpressions.Regex ChromiumEnd = new System.Text.RegularExpressions.Regex(
+            @" - (?:Google Chrome(?: Beta| Dev| Canary)?|Chromium|Brave|Opera|Vivaldi)$");
+        static readonly System.Text.RegularExpressions.Regex FirefoxEnd = new System.Text.RegularExpressions.Regex(
+            @" (?:-|—) (?:Mozilla Firefox|Firefox(?: Developer Edition| Nightly)?)(?: Private Browsing)?$");
+
+        /**
+         * The tab's title alone, as the Mac's window list says a browser window's (the shared rules look
+         * for ".pdf", "Google Slides" and the like at its end): a Windows browser's window title carries
+         * the browser's name, Edge's also its profile and how many more tabs it has. Any other app's
+         * title is as Windows has it.
+         */
+        public static string TabTitle(AppInfo app, string title)
+        {
+            if (string.IsNullOrEmpty(title)) return title ?? "";
+            switch (app.Bundle)
+            {
+                case "com.microsoft.edgemac": return EdgeTitle(title, EdgeProfiles());
+                case "com.google.Chrome":
+                case "org.chromium.Chromium":
+                case "com.brave.Browser":
+                case "com.operasoftware.Opera":
+                case "com.vivaldi.Vivaldi":
+                    return ChromiumEnd.Replace(title, "");
+                case "org.mozilla.firefox": return FirefoxEnd.Replace(title, "");
+                default: return title;
+            }
+        }
+
         /** A browser's private window: its title says so ("InPrivate", "Incognito", "Private Browsing"). */
         public static bool PrivateTitle(AppInfo app, string title)
         {
@@ -175,12 +270,21 @@ namespace Tutornote.Screen
         {
             "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "Progman", "WorkerW", "#32768", "tooltips_class32",
             "NotifyIconOverflowWindow", "TopLevelWindowForOverflowXamlIsland", "Xaml_WindowedPopupClass",
-            "ForegroundStaging", "MultitaskingViewFrame", "TaskListThumbnailWnd",
+            "ForegroundStaging", "MultitaskingViewFrame", "TaskListThumbnailWnd", "XamlExplorerHostIslandWindow",
         });
         static readonly HashSet<string> NothingExeSet = new HashSet<string>(new[]
         {
             "startmenuexperiencehost.exe", "searchhost.exe", "searchapp.exe", "shellexperiencehost.exe", "textinputhost.exe",
+            "shellhost.exe",
         });
+
+        /** Windows' own shell in front (the taskbar, Start, search, Quick Settings, Alt-Tab): no app the
+         *  student went to, as the Mac's Dock and menu bar never are. The desktop is (Explorer, as Finder). */
+        public static bool IsShell(IntPtr h)
+        {
+            string cls = Win32.ClassOf(h);
+            return cls != "Progman" && cls != "WorkerW" && IsNothing(h);
+        }
 
         /**
          * The window on top at a point, front to back. Click-through windows (Tutornote's lesson layer
@@ -201,8 +305,16 @@ namespace Tutornote.Screen
                 if ((ex & Win32.WS_EX_TRANSPARENT) != 0) continue;
                 uint pid = Win32.PidOf(h);
                 if (skip != null && skip.Contains(pid)) continue;
-                if ((stop != null && stop.Contains(h.ToInt64())) || (ownPid != 0 && pid == ownPid))
+                if (stop != null && stop.Contains(h.ToInt64()))
                 {
+                    hit.Own = true;
+                    return hit;
+                }
+                if (ownPid != 0 && pid == ownPid)
+                {
+                    // Tutornote's own: its ordinary windows; its other floating ones (the lesson's layer,
+                    // which takes clicks only over the card and the dock) are looked through, as on the Mac.
+                    if ((ex & Win32.WS_EX_TOPMOST) != 0) continue;
                     hit.Own = true;
                     return hit;
                 }

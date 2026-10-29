@@ -56,13 +56,65 @@ namespace Tutornote.Screen
             Check("chrome.exe is Chrome", Apps.BundleFor("chrome.exe") == "com.google.Chrome");
             Check("msedge.exe is Edge", Apps.BundleFor("msedge.exe") == "com.microsoft.edgemac");
             Check("powerpnt.exe is PowerPoint", Apps.BundleFor("powerpnt.exe") == "com.microsoft.Powerpoint");
-            Check("kindle.exe is a reader", Apps.BundleFor("kindle.exe") == "com.amazon.Kindle");
+            Check("kindle.exe is the Mac's page-turning Kindle", Apps.BundleFor("kindle.exe") == "com.amazon.Lassen");
             Check("an app with no twin is win.<name>", Apps.BundleFor("foo.exe") == "win.foo");
             Check("password managers are private", Apps.IsPrivateExe("keepassxc.exe") && Apps.IsPrivateExe("1password.exe"));
             var edge = new AppInfo { Bundle = "com.microsoft.edgemac" };
             Check("an InPrivate window is private", Apps.PrivateTitle(edge, "New tab - [InPrivate] - Microsoft Edge"));
             Check("an ordinary tab is not", !Apps.PrivateTitle(edge, "Photosynthesis - Wikipedia - Microsoft Edge"));
             Check("a document called Incognito in Word is not a private window", !Apps.PrivateTitle(new AppInfo { Bundle = "com.microsoft.Word" }, "Incognito.docx - Word"));
+
+            // Tab titles, as the Mac's window list says a browser window's
+            var chrome = new AppInfo { Bundle = "com.google.Chrome" };
+            var firefox = new AppInfo { Bundle = "org.mozilla.firefox" };
+            Check("Chrome's name leaves a PDF's title", Apps.TabTitle(chrome, "lecture 3.pdf - Google Chrome") == "lecture 3.pdf");
+            var profiles = new List<string> { "Personal", "Work", "InPrivate" };
+            Check("Edge's profile and name leave it", Apps.EdgeTitle("lecture 3.pdf - Personal - Microsoft​ Edge", profiles) == "lecture 3.pdf");
+            Check("so does Edge's count of other tabs", Apps.EdgeTitle("Cells - Wikipedia and 2 more pages - Work - Microsoft​ Edge", profiles) == "Cells - Wikipedia");
+            Check("Edge with no profile", Apps.EdgeTitle("Notes.pdf - Microsoft Edge", profiles) == "Notes.pdf");
+            Check("a tab title's own last part is no profile", Apps.EdgeTitle("Cells - Wikipedia - Microsoft​ Edge", profiles) == "Cells - Wikipedia");
+            Check("nor is a PDF's name after a dash", Apps.EdgeTitle("Chapter 3 - Cells.pdf - Microsoft​ Edge", profiles) == "Chapter 3 - Cells.pdf");
+            Check("a title not in Edge's form is left as it is", Apps.EdgeTitle("Downloads", profiles) == "Downloads");
+            Check("Firefox's name leaves it", Apps.TabTitle(firefox, "Week 4 slides - Google Slides — Mozilla Firefox") == "Week 4 slides - Google Slides");
+            Check("a title's own dashes stay", Apps.TabTitle(chrome, "Cells - Wikipedia - Google Chrome") == "Cells - Wikipedia");
+            Check("any other app's title is as Windows has it", Apps.TabTitle(new AppInfo { Bundle = "com.microsoft.Word" }, "Essay.docx - Word") == "Essay.docx - Word");
+
+            // Tap verdicts (the Mac's verdict table, by pixels)
+            bool acted;
+            Check("an unchanged line is skipped, not acted", Watcher.Verdict(1, false, false, true, 0.2, 0, 0, 0, 1.5, null, out acted) == "skipped" && !acted);
+            Check("even with a video playing elsewhere in the window", Watcher.Verdict(1, false, false, true, 0.2, 40, 0, 0, 1.5, null, out acted) == "skipped" && !acted);
+            Check("a double click selects", Watcher.Verdict(2, false, false, true, 30, 30, 50, 20, 1.5, null, out acted) == "select" && acted);
+            Check("a menu over the tap covers it", Watcher.Verdict(1, true, false, true, 0, 0, 0, 0, 1.5, null, out acted) == "covered" && acted);
+            Check("a new title is the click's doing", Watcher.Verdict(1, false, true, true, 0, 0, 0, 0, 1.5, null, out acted) == "title" && acted);
+            Check("a caret's thin stroke acted", Watcher.Verdict(1, false, false, true, 3, 0, 2, 22, 1.5, null, out acted) == "caret" && acted);
+            Check("the line and the page around it changed: content", Watcher.Verdict(1, false, false, true, 20, 9, 200, 30, 1.5, null, out acted) == "content" && acted);
+            Check("a faint change of the line alone is no click (a hover)", Watcher.Verdict(1, false, false, true, 2.5, 0.3, 120, 20, 1.5, null, out acted) == "pixels" && !acted);
+            Check("a private window is never pictured, never acted", Watcher.Verdict(1, false, false, false, 0, 0, 0, 0, 1.5, null, out acted) == "pixels" && !acted);
+            Check("a changed line whose words stayed: pointing at them (a selection or highlight)", Watcher.Verdict(1, false, false, true, 32, 0.9, 400, 30, 1.5, "kept", out acted) == "kept" && !acted);
+            Check("words that stayed while the page around them changed: content (a tab)", Watcher.Verdict(1, false, false, true, 32, 9, 400, 30, 1.5, "kept", out acted) == "content" && acted);
+            Check("words that went: the click did something", Watcher.Verdict(1, false, false, true, 32, 0.9, 400, 30, 1.5, "gone", out acted) == "gone" && acted);
+            if (Ocr.Engine() != null)
+            {
+                const string said = "Mitochondria turn glucose into energy";
+                Picture was = Draw(said, 900, 90);
+                Picture marked = Paint(900, 90, delegate (Graphics g)
+                {
+                    using (var mark = new SolidBrush(Color.FromArgb(255, 255, 236, 140))) g.FillRectangle(mark, 0, 10, 900, 70);
+                    using (var font = new Font("Segoe UI", 28)) g.DrawString(said, font, Brushes.Black, 10, 15);
+                });
+                Picture other = Draw("Chloroplasts capture light for plants", 900, 90);
+                double share;
+                Check("the same words with a highlight behind them are kept", Watcher.TapText(was, marked, 40, out share) == "kept" && share >= 0.6);
+                Check("other words where the tap was: gone", Watcher.TapText(was, other, 40, out share) == "gone");
+                Check("no words at the tap: none", Watcher.TapText(Paint(900, 90, delegate (Graphics g) { }), was, 40, out share) == "none");
+            }
+
+            // The primary button, swapped for a left-handed student
+            ushort down, up;
+            Input.PrimaryFlags(false, out down, out up);
+            Check("the primary button is the left one", down == Win32.RI_MOUSE_LEFT_DOWN && up == Win32.RI_MOUSE_LEFT_UP);
+            Input.PrimaryFlags(true, out down, out up);
+            Check("and the right one with the buttons swapped", down == Win32.RI_MOUSE_RIGHT_DOWN && up == Win32.RI_MOUSE_RIGHT_UP);
 
             // JSON both ways
             var line = new Dictionary<string, object> { { "t", "Café 1–2" }, { "c", 1 }, { "x", 10.5 } };

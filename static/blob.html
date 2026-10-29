@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <title>Tutornote tutor</title>
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; media-src 'self' file:" />
     <style>
       /*
         The desktop companion's blob (src/main/companion.ts): a 64 point purple blob with the tutor
@@ -128,6 +128,19 @@
             void body.offsetWidth;
             body.classList.add("pop");
           }
+        });
+
+        // The bubble pop as the tutor hops out and lands back (companion.ts popSound, which keeps to
+        // the Sounds switch). Quiet, as every interface sound is.
+        var pop = new Audio("sounds/bubble_pop.mp3");
+        pop.preload = "auto";
+        pop.volume = 0.6;
+        if (bridge.onSound) bridge.onSound(function () {
+          try {
+            pop.currentTime = 0;
+            var playing = pop.play();
+            if (playing && playing.catch) playing.catch(function () {});
+          } catch (e) {}
         });
 
         // The app moves the window while the button is down (a drag region would take the click
