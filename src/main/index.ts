@@ -1,6 +1,7 @@
 import { app, ipcMain, session, systemPreferences, type IpcMainInvokeEvent } from "electron";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { offendingSwitch } from "./argGuard";
 import { authLog, beginBrowserSignIn, cancelBrowserSignIn, deepLinksIn, handleDeepLink, registerProtocol } from "./auth";
 import {
   API_ORIGIN,
@@ -37,6 +38,17 @@ import { createMainWindow, focusMainWindow, getMainWindow, setBrowserSignIn, sho
 */
 
 app.setAppUserModelId("app.tutornote.desktop");
+
+// A packaged app refuses the debugging, proxy and certificate switches that would let another
+// program on the machine instrument it or read its origin (WHAT_TO_FIX.md WIN-03 / MAC-03); the
+// fuses cover only the matching environment variables. A development run keeps them.
+if (app.isPackaged) {
+  const bad = offendingSwitch((name) => app.commandLine.hasSwitch(name));
+  if (bad) {
+    console.error(`[anothernotes] refusing to start: the --${bad} switch is not allowed`);
+    app.exit(1);
+  }
+}
 
 // An error nothing caught goes to the log (the terminal the app was started from), not
 // into a dialog that stops the app until someone clicks it away.
@@ -134,6 +146,9 @@ if (!app.requestSingleInstanceLock()) {
         return callback(false);
       }
       if (permission === "media") {
+        // The microphone is for the web app's own page (dictation, talking to the tutor), never a
+        // subframe (WHAT_TO_FIX.md WIN-07 / MAC-08).
+        if (!details.isMainFrame) return callback(false);
         const types = "mediaTypes" in details ? (details.mediaTypes ?? []) : [];
         if (types.includes("video")) return callback(false);
         if (process.platform === "darwin") {
@@ -183,7 +198,9 @@ if (!app.requestSingleInstanceLock()) {
       details.requestHeaders["X-AnotherNotes-Client"] = CLIENT_HEADER;
       if (details.resourceType === "mainFrame") {
         const sent = /(^|;\s*)an_preview=[^;]+/.test(details.requestHeaders.Cookie ?? "");
-        console.log(`[anothernotes] GET ${details.url} gateKey=${sent ? "sent" : "not sent"}`);
+        // Path only: the desktop exchange is a top-level GET whose query carries the code and the
+        // PKCE verifier (WHAT_TO_FIX.md WIN-08 / MAC-11).
+        console.log(`[anothernotes] GET ${details.url.split(/[?#]/)[0]} gateKey=${sent ? "sent" : "not sent"}`);
       }
       callback({ requestHeaders: details.requestHeaders });
     });
