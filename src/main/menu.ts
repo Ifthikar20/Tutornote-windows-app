@@ -4,6 +4,7 @@ import { BOARD_COPY, clampBoardZoom } from "./boardHost";
 import { WEBSITE_URL } from "./config";
 import { appEvents } from "./events";
 import { openExternal } from "./links";
+import { microphoneAnswer, setMicrophoneAnswer } from "./microphone";
 import {
   boardPlaceNow,
   closeScreenBoard,
@@ -50,13 +51,15 @@ function openCurrentPageInBrowser(): void {
   openExternal(/^https?:/i.test(url) ? url : WEBSITE_URL);
 }
 
-/** The Window menu's board item says where the board is: the menu is built again when that changes. */
+/** The Window menu's board item says where the board is, and the File menu's microphone item the
+ *  student's answer: the menu is built again when either changes. */
 let boardHooked = false;
 
 export function installMenu(): void {
   if (!boardHooked) {
     boardHooked = true;
     appEvents.on("board-place-changed", () => installMenu());
+    appEvents.on("microphone-changed", () => installMenu());
   }
   const updateItem: MenuItemConstructorOptions = {
     label: "Check for Updates…",
@@ -108,6 +111,16 @@ export function installMenu(): void {
         { label: "New Note in Tab", accelerator: "CmdOrCtrl+T", visible: false, click: () => newTab() },
         { type: "separator" },
         { label: "Sign In with Your Browser…", click: () => beginBrowserSignIn() },
+        { type: "separator" },
+        // The answer to the app's own microphone question, changed here (microphone.ts; WIN-07 /
+        // MAC-08). Unticked before any answer: ticking it allows, unticking it refuses, and the
+        // question is not put again either way.
+        {
+          label: "Allow Microphone",
+          type: "checkbox",
+          checked: microphoneAnswer() === "allow",
+          click: (item) => setMicrophoneAnswer(item.checked ? "allow" : "deny"),
+        },
         { type: "separator" },
         // (in the lesson over another app, ⌘W closes that lesson, never a tab behind it; in the
         // lesson's board window, only the board, as its red light does)

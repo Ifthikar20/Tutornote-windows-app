@@ -19,8 +19,10 @@ import {
   WEBSITE_URL,
 } from "./config";
 import { installCompanion } from "./companion";
+import { appEvents } from "./events";
 import { installExplain } from "./explain";
 import { installMenu } from "./menu";
+import { microphoneAllowed, microphoneAnswer } from "./microphone";
 import { installRenderer, registerAppScheme, rendererBuild } from "./renderer";
 import { installScreenTeach } from "./screenTeach";
 import { installSignIn } from "./signin";
@@ -151,17 +153,32 @@ if (!app.requestSingleInstanceLock()) {
         if (!details.isMainFrame) return callback(false);
         const types = "mediaTypes" in details ? (details.mediaTypes ?? []) : [];
         if (types.includes("video")) return callback(false);
-        if (process.platform === "darwin") {
-          void systemPreferences.askForMediaAccess("microphone").then((granted) => callback(granted));
-          return;
-        }
-        return callback(true);
+        // Asked once in the app, and the answer kept in userData (microphone.ts; WIN-07 / MAC-08):
+        // "deny" refuses without asking again; the File menu changes it. macOS then asks its own
+        // question, the first time.
+        void microphoneAllowed(contents).then(
+          (allowed) => {
+            if (!allowed) {
+              console.log("[permissions] request refused: media (the student's answer is no)");
+              return callback(false);
+            }
+            if (process.platform === "darwin") {
+              void systemPreferences.askForMediaAccess("microphone").then((granted) => callback(granted));
+              return;
+            }
+            callback(true);
+          },
+          () => callback(false),
+        );
+        return;
       }
       callback(permission === "clipboard-sanitized-write" || permission === "fullscreen" || permission === "notifications");
     });
     // The same rule for a page asking whether it has a permission (navigator.permissions,
     // and what Chromium checks before a device or a feature): yes only for the app's origin
-    // and what the requests above can grant. Devices (HID, serial, USB) are never granted,
+    // and what the requests above can grant. The microphone is no once the student said no
+    // (microphone.ts); before any answer it is yes, as before, so that the page asks, and the
+    // request then puts the question. Devices (HID, serial, USB) are never granted,
     // and their choosers close with nothing chosen.
     session.defaultSession.setPermissionCheckHandler((_contents, permission, requestingOrigin, details) => {
       let origin = "";
@@ -173,7 +190,7 @@ if (!app.requestSingleInstanceLock()) {
       const allowed =
         origin === APP_ORIGIN &&
         (permission === "media"
-          ? details.mediaType !== "video"
+          ? details.mediaType !== "video" && microphoneAnswer() !== "deny"
           : permission === "clipboard-sanitized-write" || permission === "fullscreen" || permission === "notifications");
       if (!allowed) console.log(`[permissions] check refused: ${permission} (${origin || requestingOrigin || "no origin"})`);
       return allowed;
@@ -247,6 +264,8 @@ if (!app.requestSingleInstanceLock()) {
     );
 
     installMenu();
+    // Every time the sign-in screen takes the main window, the sign-in cookies go (above).
+    appEvents.on("main-signed-out", () => void clearSignInCookies());
     // The web app when there is a session, the app's own sign-in screen when there is not
     // (signin.ts).
     createMainWindow((await hasSession()) ? "app" : "signin");
@@ -288,6 +307,32 @@ async function gateKeyState(): Promise<string> {
     return cookies[0].value ? `stored (${cookies[0].value.length} chars)` : "stored but unreadable (empty value)";
   } catch {
     return "none";
+  }
+}
+
+/**
+ * Signing out leaves no sign-in in the cookie jar (WHAT_TO_FIX.md WIN-08 / MAC-11). When the main
+ * window goes to the sign-in screen (windows.ts showSignIn: a sign-out, a session that ran out, a
+ * launch with none), the refresh cookie goes, and with it every cookie a server set httpOnly (what
+ * holds a sign-in); then the jar is written to disk. The page's own cookies stay (its cookie
+ * choice, the sidebar: no script can set an httpOnly cookie), and so does the maintenance gate's
+ * key. The app's data folder is kept on uninstall (electron-builder.config.cjs), drafts and all.
+ */
+async function clearSignInCookies(): Promise<void> {
+  const jar = session.defaultSession.cookies;
+  try {
+    let removed = 0;
+    for (const cookie of await jar.get({})) {
+      if (cookie.name === PREVIEW_COOKIE || !cookie.domain) continue;
+      if (!cookie.httpOnly && cookie.name !== SESSION_COOKIE) continue;
+      const host = cookie.domain.replace(/^\./, "");
+      await jar.remove(`${cookie.secure ? "https" : "http"}://${host}${cookie.path ?? "/"}`, cookie.name);
+      removed += 1;
+    }
+    await jar.flushStore();
+    if (removed) console.log(`[cookie] signed out: ${removed} sign-in cookie(s) removed`);
+  } catch (e) {
+    console.warn("[cookie] signed out: the sign-in cookies could not all be removed:", e);
   }
 }
 

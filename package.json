@@ -13,7 +13,7 @@
     "build": "tsc -p tsconfig.json && node scripts/build-screen-helper.mjs",
     "helper": "node scripts/build-screen-helper.mjs --force",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --experimental-strip-types --test scripts/tests/boardHost.test.ts scripts/tests/boardPlace.test.ts scripts/tests/companionPlace.test.ts scripts/tests/speechLog.test.ts scripts/tests/apiTiming.test.ts scripts/tests/launchReveal.test.ts scripts/tests/docIdentity.test.ts scripts/tests/env.test.ts scripts/tests/argGuard.test.ts scripts/tests/authCallback.test.ts",
+    "test": "node --experimental-strip-types --test scripts/tests/boardHost.test.ts scripts/tests/boardPlace.test.ts scripts/tests/companionPlace.test.ts scripts/tests/speechLog.test.ts scripts/tests/apiTiming.test.ts scripts/tests/launchReveal.test.ts scripts/tests/docIdentity.test.ts scripts/tests/env.test.ts scripts/tests/argGuard.test.ts scripts/tests/authCallback.test.ts scripts/tests/micConsent.test.ts",
     "renderer": "node scripts/build-renderer.mjs",
     "start": "npm run build && electron .",
     "pack": "npm run build && electron-builder --win --x64 --dir --publish never --config electron-builder.config.cjs",

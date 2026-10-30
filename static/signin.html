@@ -75,6 +75,8 @@
       .eye .shut { display: none; }
       .eye[aria-pressed="true"] .open { display: none; }
       .eye[aria-pressed="true"] .shut { display: block; }
+      .remember { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 13px; font-weight: 500; color: var(--muted); }
+      .remember input { width: 15px; height: 15px; margin: 0; accent-color: var(--ink); }
       .submit {
         display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; height: 48px; border: 0; border-radius: 999px;
         background: var(--ink); color: var(--on-ink); font-size: 15px; font-weight: 600; cursor: default; transition: opacity .2s ease, transform .2s var(--ease);
@@ -219,6 +221,7 @@
                   </button>
                 </div>
               </div>
+              <div><label class="remember" for="remember"><input id="remember" type="checkbox" /> Remember my email</label></div>
               <button class="submit" id="submit" type="submit"><span class="spin"></span><span class="label">Login</span></button>
             </form>
 
@@ -441,12 +444,27 @@
 
         var store = {
           get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
-          set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+          set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+          drop: function (k) { try { localStorage.removeItem(k); } catch (e) {} }
         };
 
+        // The email is kept on this computer only when the student ticks "Remember my email"
+        // (WHAT_TO_FIX.md WIN-08 / MAC-11): off by default, and an email kept before without that
+        // tick is forgotten here.
         var form = document.getElementById("form-email");
         var email = document.getElementById("email");
-        email.value = store.get("signin.email") || "";
+        var remember = document.getElementById("remember");
+        remember.checked = store.get("signin.remember") === "1";
+        if (remember.checked) email.value = store.get("signin.email") || "";
+        else store.drop("signin.email");
+        remember.addEventListener("change", function () {
+          if (remember.checked) {
+            store.set("signin.remember", "1");
+          } else {
+            store.drop("signin.remember");
+            store.drop("signin.email");
+          }
+        });
         (email.value ? password : email).focus();
 
         if (!bridge || !bridge.signIn) {
@@ -473,7 +491,7 @@
           button.disabled = true;
           button.classList.add("busy");
           var address = email.value.trim();
-          store.set("signin.email", address);
+          if (remember.checked) store.set("signin.email", address);
           bridge.signIn({ email: address, password: password.value }).then(function (result) {
             if (result && result.ok) {
               button.querySelector(".label").textContent = "Opening your notes…";

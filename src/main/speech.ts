@@ -5,6 +5,7 @@ import path from "node:path";
 import readline from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { APP_ORIGIN } from "./config";
+import { microphoneAllowed, microphoneAnswer } from "./microphone";
 import { speechLine, speechOutputOf, speechStartOptions, type SpeechOutput } from "./speechLog";
 
 /*
@@ -318,6 +319,12 @@ function sessionOf(sender: WebContents, ref: number): Session | undefined {
 export function installSpeech(): void {
   if (!nativeSpeechAvailable()) return;
   const watched = new WeakSet<WebContents>();
+  // The starts waiting for the student's answer to the app's microphone question: a stop or an
+  // abort of the same page and ref meanwhile drops its start, and so does the page going.
+  const asking = new Set<{ sender: WebContents; ref: number }>();
+  const dropAsking = (sender: WebContents, ref: number): void => {
+    for (const waiting of asking) if (waiting.sender === sender && waiting.ref === ref) asking.delete(waiting);
+  };
 
   ipcMain.on("speech:start", (event, ref: unknown, lang: unknown, continuous: unknown, options: unknown) => {
     if (!trusted(event) || typeof ref !== "number") return;
@@ -326,6 +333,40 @@ export function installSpeech(): void {
       sender.send("speech:event", { ref, ev: "error", code });
       sender.send("speech:event", { ref, ev: "end", text: "" });
     };
+    // The helper's microphone is the app's too: the student's answer to the app's own question
+    // (microphone.ts; WHAT_TO_FIX.md WIN-07 / MAC-08) holds here as for the web app's requests.
+    // No refuses as a browser does ("not-allowed"); before any answer the question is put first.
+    dropAsking(sender, ref);
+    const answer = microphoneAnswer();
+    if (answer === "deny") return fail("not-allowed");
+    if (answer === null) {
+      const waiting = { sender, ref };
+      asking.add(waiting);
+      const left = (details: { isMainFrame: boolean; isSameDocument: boolean }): void => {
+        if (details.isMainFrame && !details.isSameDocument) asking.delete(waiting);
+      };
+      sender.on("did-start-navigation", left);
+      void microphoneAllowed(sender).then((allowed) => {
+        const still = asking.delete(waiting);
+        if (sender.isDestroyed()) return;
+        sender.off("did-start-navigation", left);
+        if (!still) return;
+        if (allowed) begin(sender, ref, lang, continuous, options, fail);
+        else fail("not-allowed");
+      });
+      return;
+    }
+    begin(sender, ref, lang, continuous, options, fail);
+  });
+
+  const begin = (
+    sender: WebContents,
+    ref: number,
+    lang: unknown,
+    continuous: unknown,
+    options: unknown,
+    fail: (code: string) => void,
+  ): void => {
     const child = ensureHelper();
     if (!child) return fail("network");
     // A page restarting a recogniser reuses no ref; an old one with this ref is gone.
@@ -366,10 +407,11 @@ export function installSpeech(): void {
       continuous: continuous === true,
       ...opts,
     });
-  });
+  };
 
   ipcMain.on("speech:stop", (event, ref: unknown) => {
     if (!trusted(event) || typeof ref !== "number") return;
+    dropAsking(event.sender, ref);
     const session = sessionOf(event.sender, ref);
     if (!session) return;
     endedBy(session, "stop");
@@ -378,6 +420,7 @@ export function installSpeech(): void {
 
   ipcMain.on("speech:abort", (event, ref: unknown) => {
     if (!trusted(event) || typeof ref !== "number") return;
+    dropAsking(event.sender, ref);
     const session = sessionOf(event.sender, ref);
     if (!session) return;
     endedBy(session, "abort");
@@ -388,11 +431,13 @@ export function installSpeech(): void {
   // A page about to listen: the microphone kept running for `ms` (at most 20 s; 0 lets it go
   // unless a session runs). The helper starts it only once it is allowed, and never asks. A
   // "let go" with no helper running has nothing to tell; nor has a warm while a helper that went
-  // down by itself is given time (ensureHelper's `auto`).
+  // down by itself is given time (ensureHelper's `auto`). Nor a warm before the student said yes
+  // to the app's microphone question (microphone.ts): a warm never puts it; the first start does.
   ipcMain.on("speech:warm", (event, ms: unknown) => {
     if (!trusted(event) || typeof ms !== "number" || !Number.isFinite(ms)) return;
     const wanted = Math.round(Math.min(Math.max(ms, 0), 20_000));
     if (wanted === 0 && !helper) return;
+    if (wanted > 0 && microphoneAnswer() !== "allow") return;
     if (!ensureHelper(true)) return;
     command({ cmd: "warm", id: 0, ms: wanted });
   });
