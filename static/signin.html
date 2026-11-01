@@ -38,7 +38,7 @@
       /* ---------- the left half: the form ---------- */
       .auth { position: relative; display: flex; flex-direction: column; min-width: 0; overflow: hidden auto; padding: 0 40px; }
       .form-col { position: relative; z-index: 2; width: 100%; max-width: 27rem; margin: auto; padding: 40px 0 24px; animation: rise .6s var(--ease) both; }
-      .logo { display: block; width: 44px; height: 44px; margin: 0 0 28px; }
+      .logo { display: block; height: 44px; width: auto; margin: 0 0 28px; }
       h1 { margin: 0; font-family: var(--serif); font-weight: 400; font-size: 48px; line-height: 1.08; letter-spacing: 0; }
       .beta { margin: 16px 0 0; font-size: 14px; color: var(--muted); }
       .social { display: flex; gap: 12px; margin-top: 24px; }
@@ -143,12 +143,12 @@
 
       /* A short window: the same page, closer together. */
       @media (max-height: 880px) {
-        .form-col { padding: 24px 0 16px; } .logo { width: 38px; height: 38px; margin-bottom: 18px; }
+        .form-col { padding: 24px 0 16px; } .logo { height: 38px; margin-bottom: 18px; }
         h1 { font-size: 40px; } .beta { margin-top: 10px; } .social { margin-top: 18px; } .or { margin: 16px 0; }
         .pill, .field, .submit { height: 44px; } form > * + * { margin-top: 12px; } .more { margin-top: 16px; }
       }
       @media (max-height: 700px) {
-        .note, .beta { display: none; } .form-col { padding: 16px 0 12px; } .logo { width: 34px; height: 34px; margin-bottom: 14px; }
+        .note, .beta { display: none; } .form-col { padding: 16px 0 12px; } .logo { height: 34px; margin-bottom: 14px; }
         h1 { font-size: 32px; } .social { margin-top: 14px; } .or { margin: 12px 0; }
         .pill, .field, .submit { height: 40px; } form > * + * { margin-top: 10px; } .terms { margin-top: 12px; } .more { margin-top: 12px; }
       }
@@ -165,16 +165,7 @@
         <div class="leaves" id="leaves" aria-hidden="true"></div>
 
         <main class="form-col" id="form-col">
-          <svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" aria-hidden="true">
-            <rect width="512" height="512" rx="116" fill="#1E1E1E"/>
-            <path fill="#FFFFFF" d="M136 116a26 26 0 0 1 26-26h136l78 78v228a26 26 0 0 1-26 26H162a26 26 0 0 1-26-26V116Z"/>
-            <path fill="#FFFFFF" fill-opacity="0.45" d="M298 90l78 78h-60a18 18 0 0 1-18-18V90Z"/>
-            <g fill="#1E1E1E">
-              <rect x="176" y="212" width="160" height="22" rx="11"/>
-              <rect x="176" y="264" width="160" height="22" rx="11"/>
-              <rect x="176" y="316" width="98" height="22" rx="11"/>
-            </g>
-          </svg>
+          <img class="logo" src="tutornote-wordmark.png" alt="Tutornote" />
           <h1>Welcome back to <br />Tutornote</h1>
           <p class="beta">Tutornote is currently in beta.</p>
 
