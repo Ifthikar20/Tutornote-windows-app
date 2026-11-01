@@ -348,11 +348,13 @@ export function firstBodyPoint(read: Look): { x: number; y: number } {
     it waited on another window ("title").
 */
 
-/** The lesson's window as the helper last said it ("ident"). `topFrame`: where `top` is. */
+/** The lesson's window as the helper last said it ("ident"). `frame`: where that window is (from a
+ *  helper that says it); `topFrame`: where `top` is. */
 export interface IdentLook {
   window: number;
   title: string;
   onScreen: boolean;
+  frame?: Frame | null;
   top: number | null;
   topTitle: string;
   topFrame?: Frame | null;
@@ -480,4 +482,42 @@ export function sameDocument(before: ReadonlyArray<Look>, after: Look): { same: 
   const share = before.reduce((best, look) => Math.max(best, sameLook(look, after)), 0);
   // (share * rows: the rows found, of the best of them)
   return { same: Math.round(share * rows) >= SAME_LOOK_FOUND && share >= SAME_LOOK_SHARE, share, rows };
+}
+
+/*
+  The lesson's window moved (dragged by its title bar, Cmd dragged from behind, put elsewhere by a
+  window manager): no pixel of it changes, only where it is, so the helper says no new look for it,
+  and until the next read the lesson's marks stayed where its words had been (the founder,
+  2026-10-28: the tutor over another app "should be very accurate in the way it points at things"
+  and "super responsive"). The helper says where the window is on every ident tick while it goes
+  (main.swift identTick): its own frame (`frame`), whichever app is in front; from a helper older
+  than that, `topFrame` while the window in front of its app is the lesson's own. Everything the
+  lesson holds of it moves by as much as the window did, at once (screenTeach.ts followFrame).
+  A resize is no move: the app lays its page out afresh (a PDF fit to the width grows with it),
+  which only a read can tell, and the helper says that new look ("changed").
+*/
+
+/** Two frames this close in width and in height (points) are the same size. */
+export const MOVE_SAME_SIZE = 1;
+/** A move this short or shorter each way (points) is none (the window server's frames are whole
+ *  points). */
+export const MOVE_LEAST = 0.5;
+
+/** Where the lesson's window is, as an ident says it (above), or null when it says nothing of it. */
+export function identFrame(i: IdentLook): Frame | null {
+  if (i.frame) return i.frame;
+  return i.top !== null && i.top === i.window && i.topFrame ? i.topFrame : null;
+}
+
+/** How far the lesson's window has moved from `before` (where the lesson last had it: its latest
+ *  read, moved by every move since), as the ident `i` says it is now: {dx, dy} in points, right
+ *  and down; null for no move, for a resize (MOVE_SAME_SIZE) and for an ident that says nothing of
+ *  where it is. */
+export function frameMove(before: Frame, i: IdentLook): { dx: number; dy: number } | null {
+  const now = identFrame(i);
+  if (!now) return null;
+  if (Math.abs(now.w - before.w) > MOVE_SAME_SIZE || Math.abs(now.h - before.h) > MOVE_SAME_SIZE) return null;
+  const dx = now.x - before.x;
+  const dy = now.y - before.y;
+  return Math.abs(dx) > MOVE_LEAST || Math.abs(dy) > MOVE_LEAST ? { dx, dy } : null;
 }

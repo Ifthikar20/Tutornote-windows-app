@@ -24,25 +24,33 @@ import {
   BOARD_COPY,
   boardMoveOf,
   boardPlaceFor,
+  boardPlaceMsg,
   clampBoardZoom,
   coversReading,
+  displayChanged,
   fullScreenFrame,
   leavesTab,
   mainCanHold,
+  overlayArea,
+  overlayHome,
   type BoardPlace,
   type BoardPrefs,
   type BoardWhere,
+  type OverlayHome,
   type Reading,
 } from "./boardHost";
 import { boardStateOf, BOARD_MIN, opaqueColor, placeBoard, textBox } from "./boardPlace";
-import { isBrowserApp, isPrivateApp, isReaderApp, selectionKept, tapNumbers } from "./companionPlace";
+import { isBrowserApp, isPrivateApp, isReaderApp, selectionKept, tapNumbers, windowIdOf } from "./companionPlace";
 import { APP_ORIGIN, originOf } from "./config";
 import {
   anotherWindow,
   bodyRows,
   docKeyOf,
   firstBodyPoint,
+  frameMove,
+  identFrame,
   identVerdict,
+  MOVE_SAME_SIZE,
   sameDocument,
   SWITCH_MIN_H,
   SWITCH_MIN_W,
@@ -58,6 +66,8 @@ import {
   bringWindowForward,
   chordWatch,
   hideFromCapture,
+  noActivateWindow,
+  observePaged,
   observeWindows,
   readWindow,
   ScreenReadError,
@@ -69,6 +79,7 @@ import {
   type ScreenChord,
   type ScreenChordState,
   type ScreenIdent,
+  type ScreenKeyed,
   type ScreenLine,
   type ScreenPress,
   type ScreenRead,
@@ -77,6 +88,7 @@ import {
   type ScreenTurn,
   type ScreenTurned,
 } from "./screen";
+import { rereadLine, toLocal, turnReadLine } from "./screenRead";
 import { nativeSpeechAvailable } from "./speech";
 import { loadBoardPrefs, loadScreenBoard, saveBoardPrefs, saveScreenBoard } from "./store";
 import {
@@ -98,8 +110,9 @@ import {
   Teach mode over another app's window ("screen teach"). Once a pick has been read
   (explain.ts), the web app's own Teach mode runs over the window that was read: one
   see-through window over that display's work area (not under the Dock or the menu bar, which
-  macOS draws above it, so the lesson's own dock and chip never sit under them) loads the web
-  app's /dashboard/screen-teach page,
+  macOS draws above it, so the lesson's own dock and chip never sit under them; all of the
+  display when the window read is in native full screen, where both are hidden: boardHost.ts
+  overlayArea) loads the web app's /dashboard/screen-teach page,
   with the preload's screenTeach bridge (src/preload/index.ts). The page lays the words
   out as a stand-in page and teaches it with the same pointer, marks, caption, voice and
   board as a PDF in the app. When it has taught what is on screen it asks here to turn
@@ -154,7 +167,8 @@ interface ScreenStart {
   mode: ScreenMode;
   /** Companion mode: the card's pick that started this run. */
   choice?: ScreenChoice;
-  /** A later run of one companion session: no greeting, no start sound. */
+  /** A later run of one companion session, or a run started afresh where its window went
+   *  (rehome): no greeting, no start sound. */
   quiet?: boolean;
   /** Started by the companion (the overlay stays up between lessons). */
   companion?: boolean;
@@ -171,6 +185,12 @@ interface ScreenStart {
    *  (the page remembers that from screen-teach:switching). Never sent to a page older than it
    *  (pageHearsSwitching). */
   switched?: true;
+  /** A run started afresh where its window went (rehome: another display, full screen in or out,
+   *  its display changed): the same document, and it plays on only if the run before was playing.
+   *  One the student had paused, one standing on a new document's first words, or a held tutor,
+   *  stands on its first words until Play, as a switched run that does not play (the page
+   *  decides: it knows the run before). A page older than it hears a pick, and plays. */
+  rehomed?: true;
 }
 
 /** How a lesson was asked for: by the companion's card (companion.ts), or by a pick; or by the
@@ -182,6 +202,8 @@ export interface ScreenTeachOptions {
   row?: string;
   stale?: boolean;
   switched?: boolean;
+  /** Started afresh where its window went (rehome): ScreenStart.rehomed. */
+  rehomed?: boolean;
   /** Asked once the run's wait for the Accessibility answer is over, just before it starts: false
    *  and it never starts (the switch that asked for it was a flick after all, or the student went
    *  on to another app meanwhile). */
@@ -343,10 +365,15 @@ interface Lesson {
   /** The wait for the student's own turn going on, if any: given up when the lesson ends, and
    *  for the page's next request (the lesson has moved on, back to a page read already). */
   waiting: AbortController | null;
-  /** The window read and its words (screen points), as of its latest read: where the board
-   *  goes beside them (placeBoardFor). */
+  /** The window read and its words (screen points), as of its latest read, moved with the window
+   *  by every move of it since (followFrame), the window's frame taken as it is at a resize (its
+   *  words wait for a read): where the board goes beside them (placeBoardFor). */
   frame: Rect;
   text: Rect | null;
+  /** Where its run put the lesson's window (boardHost.ts overlayHome): over which display, that
+   *  display's bounds, and over all of it or its work area. A read of the window wanting it
+   *  elsewhere starts the run afresh there (rehomeSoon). */
+  home: OverlayHome;
   /** Its lines (screen points), as of its latest read: a tap on none of them was on no words, and
    *  a read of another document is told from the same look by them (docIdentity.ts sameLook). */
   lines: ReadonlyArray<ScreenLine>;
@@ -583,6 +610,8 @@ let boardIgnoring = false;
   BOARD_LEFT_MS is the board's all the same (onTap), never a move of the lesson.
 */
 const BOARD_LEFT_MS = 1_000;
+/** A move or a change of size of the board's window is told to the page once it has stopped this long. */
+const BOARD_MOVED_MS = 150;
 let boardWas: Array<{ bounds: Rectangle; until: number }> = [];
 /** The board's bounds as last seen: what a move or resize of it has just left. */
 let boardAt: Rectangle | null = null;
@@ -659,26 +688,6 @@ async function turningAllowed(): Promise<boolean> {
   return allowed;
 }
 
-/** A read in the window's own coordinates: every box less its top left. */
-function toLocal(read: ScreenRead, origin: Point): ScreenRead {
-  const shift = <T extends Point>(box: T): T => ({ ...box, x: box.x - origin.x, y: box.y - origin.y });
-  return {
-    app: read.app,
-    bundle: read.bundle,
-    title: read.title,
-    window: read.window,
-    pid: read.pid,
-    frame: shift(read.frame),
-    lines: read.lines.map((line) => (line.words ? { ...shift(line), words: line.words.map(shift) } : shift(line))),
-    captureMs: read.captureMs,
-    ocrMs: read.ocrMs,
-    ...(typeof read.ground === "number" && Number.isFinite(read.ground) ? { ground: read.ground } : {}),
-    ...(read.level ? { level: read.level } : {}),
-    // (the page's answer lines, where an accurate read looked for them: absent stays absent)
-    ...(read.rules ? { rules: read.rules.map((r) => ({ x0: r.x0 - origin.x, x1: r.x1 - origin.x, y: r.y - origin.y })) } : {}),
-  };
-}
-
 /** A fresh read of the lesson's window: where the board goes from now on. */
 function noteRead(current: Lesson, read: ScreenRead): void {
   current.frame = read.frame;
@@ -687,8 +696,13 @@ function noteRead(current: Lesson, read: ScreenRead): void {
   current.look = { frame: read.frame, lines: read.lines, bundle: read.bundle };
   current.title = read.title;
   current.doc = docKeyOf(read);
-  // (whether Tutornote's window covers them may have changed: a board in its tab there, with the
-  // student in the app being read, moves out beside them)
+  boardBeside(current);
+}
+
+/** Whether Tutornote's window covers what is read may have changed (a read, a move of the window
+ *  read): a board in its tab there, with the student in the app being read, moves out beside
+ *  them; the page hears where its board is. */
+function boardBeside(current: Lesson): void {
   const b = liveBoard();
   if (b && lesson === current && boardTabDocked() && leaveCoveredTab(b, current)) syncBoard();
   else sendPlace();
@@ -840,11 +854,18 @@ function adoptBoard(opener: BrowserWindow, options: BrowserWindowConstructorOpti
   host.on("resized", settled);
   // Where it was, at each move or change of size while it shows (boardWas): a tap that comes in
   // after the change, made where it was, is still the board's.
+  // And the page hears where it is now (its place's bounds) once a move or a change of size has
+  // stopped for BOARD_MOVED_MS, not at every step of a drag.
+  let placeTimer: NodeJS.Timeout | undefined;
   const changed = (): void => {
     if (board !== b || host.isDestroyed()) return;
     const now = host.getBounds();
     if (boardAt && host.isVisible() && !sameBounds(boardAt, now)) boardLeft(boardAt);
     boardAt = now;
+    clearTimeout(placeTimer);
+    placeTimer = setTimeout(() => {
+      if (board === b && !host.isDestroyed()) sendPlace();
+    }, BOARD_MOVED_MS);
   };
   host.on("move", changed);
   host.on("resize", changed);
@@ -874,6 +895,7 @@ function adoptBoard(opener: BrowserWindow, options: BrowserWindowConstructorOpti
   });
   host.on("closed", () => {
     clearTimeout(saveTimer);
+    clearTimeout(placeTimer);
     // Closed for real while its page lives on (a quit then called off leaves the close allowed):
     // the page goes too, so the lesson's page opens a new board instead of drawing on one with no
     // window (its destroyed handler drops the rest).
@@ -1225,12 +1247,21 @@ function onFreshInTab(raise: boolean): void {
   }
 }
 
-/** Where the board is, for the page (screen-teach:board-place), or null with no board. */
+/** Where the board is, for the page (screen-teach:board-place), or null with no board: in its own
+ *  window over the lesson window, that window's frame in the lesson window's points too (boardPlaceMsg). */
 function placeNow(): BoardPlace | null {
   const b = liveBoard();
   if (!b) return null;
   const app = lesson?.bundle && lesson.app ? lesson.app.slice(0, 60) : "";
-  return { where: b.place, canMove: b.place === "tab" || !mainWindowLook().signIn, covering, ...(app ? { app } : {}) };
+  const w = live();
+  return boardPlaceMsg({
+    where: b.place,
+    canMove: b.place === "tab" || !mainWindowLook().signIn,
+    covering,
+    app,
+    floating: b.place === "float" && b.host.isVisible() ? b.host.getBounds() : null,
+    lesson: w ? w.getBounds() : null,
+  });
 }
 
 /** Tell the page where the board is, when that changed (and the Window menu). */
@@ -1708,13 +1739,10 @@ function onChordState(state: ScreenChordState): void {
  */
 export async function openScreenTeach(read: ScreenRead, click: Point, opts?: ScreenTeachOptions): Promise<void> {
   const run = ++runs;
-  // The display that holds most of the window being read.
-  const display = screen.getDisplayMatching({
-    x: Math.round(read.frame.x),
-    y: Math.round(read.frame.y),
-    width: Math.max(1, Math.round(read.frame.w)),
-    height: Math.max(1, Math.round(read.frame.h)),
-  });
+  // The display that holds most of the window being read, and the part of it the lesson's window
+  // covers: its work area, or all of it for a window in native full screen (boardHost.ts).
+  const display = displayFor(read.frame);
+  const area = overlayArea(display, read.frame);
   // (a companion pick: the answer from under a minute ago, and a new one asked behind the lesson)
   const kept = companion?.on && axAnswer && Date.now() - axAnswer.at < AX_KEEP_MS ? axAnswer.allowed : null;
   const canTurn = kept ?? (await turningAllowed());
@@ -1723,9 +1751,10 @@ export async function openScreenTeach(read: ScreenRead, click: Point, opts?: Scr
   // (another document's run, asked for before that wait: not when its switch is over by now, nor
   // with the student gone on to another app, where a run playing aloud would be behind their back)
   if (opts?.still && !opts.still()) return;
-  const w = ensureWindow(display.workArea);
-  // The companion's window, moved with it (a pick made on another display while the tutor is on).
-  const movedCompanion = Boolean(companion?.on && !sameBounds(companion.work, display.workArea));
+  const w = ensureWindow(area);
+  // The companion's window, moved with it (a pick made on another display while the tutor is on,
+  // or over a window in full screen, or out of one).
+  const movedCompanion = Boolean(companion?.on && !sameBounds(companion.work, area));
   // Where macOS really put it: the boxes are made local to this.
   const b = w.getBounds();
   const mode: ScreenMode = PAGE_APPS.has(read.bundle) ? "page" : "scroll";
@@ -1745,6 +1774,7 @@ export async function openScreenTeach(read: ScreenRead, click: Point, opts?: Scr
     waiting: null,
     frame: read.frame,
     text: textBox(read.lines),
+    home: overlayHome(display, read.frame),
     lines: read.lines,
     title: read.title,
     doc: docKeyOf(read),
@@ -1759,7 +1789,7 @@ export async function openScreenTeach(read: ScreenRead, click: Point, opts?: Scr
   // The page and companion.ts hear where the companion's window is now, as for a move of its own
   // (once this lesson is the one on: companion.ts keeps the window on the lesson's display then).
   if (movedCompanion && companion) {
-    companion.work = display.workArea;
+    companion.work = area;
     companion.message = { ...companion.message, overlay: overlayRect(w) };
     sendCompanion();
     appEvents.emit("screen-teach-moved");
@@ -1782,11 +1812,14 @@ export async function openScreenTeach(read: ScreenRead, click: Point, opts?: Scr
     ...(opts?.stale ? { stale: true } : {}),
     // (another document, seen where the last run was teaching: switchRead)
     ...(opts?.switched ? { switched: true } : {}),
+    // (the same document, where its window went: rehome)
+    ...(opts?.rehomed ? { rehomed: true } : {}),
   };
   console.log(
     `[screen-teach] run ${run}: ${read.app} (${read.bundle || "no bundle id"}), ${mode}, turning ${canTurn ? "allowed" : "not allowed"}` +
       (pending.companion ? `, companion${pending.choice ? ` ${pending.choice}` : ""}${pending.quiet ? ", quiet" : ""}${pending.stale ? ", stale" : ""}` : "") +
-      (pending.switched ? ", switched" : ""),
+      (pending.switched ? ", switched" : "") +
+      (pending.rehomed ? ", rehomed" : ""),
   );
   // (companion.ts keeps its glance of this window as read here)
   appEvents.emit("screen-teach-read", read);
@@ -1800,8 +1833,10 @@ export async function openScreenTeach(read: ScreenRead, click: Point, opts?: Scr
   watchWindow(read.window);
   // The window's new looks (a page or a slide the student turned, a key, a scroll bar) reach the
   // lesson with the companion off too (onLessonChanged): the companion watches it itself while on.
-  // (and no longer a window the last run's switch waited on: observeSwitch)
+  // (and no longer a window the last run's switch waited on: observeSwitch). In a page app, a page
+  // a wheel or a swipe turns is said as one a key turns: nothing follows it from the scroll.
   switchObserved = null;
+  observePaged(mode === "page" ? [read.window] : []);
   if (!companion?.on) observeWindows([read.window]);
   registerShortcuts();
   w.webContents.setAudioMuted(false);
@@ -1835,10 +1870,13 @@ function endLesson(): boolean {
   lesson = null;
   pending = null;
   aside = false;
+  clearTimeout(homing?.timer);
+  homing = null;
   clearAppFollow();
   unwatchWindow();
   // (the companion, if on, goes on watching the window under the cursor: refreshObserve)
   switchObserved = null;
+  observePaged([]);
   if (!companion?.on) observeWindows([]);
   unregisterShortcuts();
   interactive = false;
@@ -1937,10 +1975,13 @@ async function turn(req: ScreenTurnRequest, waiting: AbortController | null): Pr
   try {
     let how: "scroll" | "key" | "manual";
     let canTurn: boolean | undefined;
+    // (the deciding move's wait for the window to settle, for the log: turnReadLine)
+    let settleMs = 0;
     if (req.how === "manual") {
       // Post nothing: wait for the student to turn the page, or scroll, themselves (one made
       // already since the last read counts: unlessMoved).
       const moved = await turnWindow({ ...base, how: "manual", timeoutMs: MANUAL_WAIT_MS, unlessMoved: req.unlessMoved }, waiting?.signal);
+      settleMs = moved.settleMs;
       if (stale()) return { ok: false, reason: "stale" };
       // Not turned in time: the lesson stops there, and its next play waits for them again.
       // Not "failed", which the page shows as a page it could not read.
@@ -1961,6 +2002,7 @@ async function turn(req: ScreenTurnRequest, waiting: AbortController | null): Pr
       for (const [i, way] of ways.entries()) {
         if (stale()) return { ok: false, reason: "stale" };
         const moved = await move(way, req, base, way === kept ? TURN_TIMEOUT_MS : TRY_TIMEOUT_MS, i === 0 && req.unlessMoved);
+        settleMs = moved.settleMs;
         if (moved.moved) {
           theirs = true;
           break;
@@ -1983,14 +2025,29 @@ async function turn(req: ScreenTurnRequest, waiting: AbortController | null): Pr
       } else {
         if (!kept || !sameWay(won, kept)) console.log(`[screen-teach] ${current.app} turns by ${won.how === "key" ? `the ${won.key} key` : "scrolling"}`);
         current.way = won;
-        // A key that turns it makes it a page app, whatever it was taken for.
-        if (won.how === "key") current.mode = "page";
+        // A key that turns it makes it a page app, whatever it was taken for (and so the helper
+        // says a page its wheel or a swipe turns, as for Kindle: observePaged).
+        if (won.how === "key") {
+          current.mode = "page";
+          observePaged([current.window]);
+        }
         how = won.how;
       }
     }
-    const read = await readWindow(current.window);
+    // (where the window is now, dragged while it was read: readNow; its times and counts, which
+    // readNow's toLocal leaves out, logged from the helper's own answer)
+    const answer = await readWindow(current.window);
+    console.log(turnReadLine(current.run, answer, settleMs, Date.now() - started));
+    const read = readNow(answer);
     // (not taken as the lesson's read when stale: another document's title would be its own then)
     if (stale()) return { ok: false, reason: "stale" };
+    // (its window gone over another display, or full screen or back: the run starts afresh there,
+    // and this read, in the old overlay's points, is no use to this one: rehomeSoon)
+    const away = awayFromHome(current, read.frame);
+    if (away) {
+      rehomeSoon(current, away);
+      return { ok: false, reason: "stale" };
+    }
     noteRead(current, read);
     const w = live();
     if (stale() || !w) return { ok: false, reason: "stale" };
@@ -2139,8 +2196,9 @@ function onScroll(scroll: ScreenScroll): void {
     }, SWITCH_SCROLL_MS);
   }
   if (!current || !w || scroll.window !== current.window || aside || scrolling > 0 || !w.isVisible()) return;
-  // (a sideways swipe moves no line up or down: a page it turns is seen as a new look instead)
-  if (scroll.dy === 0) return;
+  // (sideways too, a pan across a zoomed page: the page goes with it as it does up and down. A page
+  // a swipe turns, in an app that turns by the page, is said as a new look: observePaged)
+  if (scroll.dy === 0 && scroll.dx === 0) return;
   // Scrolling the board, over the page being read, moves the board, not the page's words (a
   // scroll comes with no point: the pointer is where it was made).
   const cursor = screen.getCursorScreenPoint();
@@ -2150,7 +2208,9 @@ function onScroll(scroll: ScreenScroll): void {
     scrollDropLogged = now;
     return;
   }
-  w.webContents.send("screen-teach:scroll", { run: current.run, dy: scroll.dy });
+  // (`lines`: a mouse wheel's, by which the page learns how far a line moves this app; 0 for a
+  // trackpad's points)
+  w.webContents.send("screen-teach:scroll", { run: current.run, dy: scroll.dy, dx: scroll.dx, lines: scroll.lines });
 }
 
 /**
@@ -2229,6 +2289,9 @@ function stepAside(away: boolean): void {
   } else if (ours && aside) {
     aside = false;
     covering = false;
+    // (its window went over another display while the student was away: its run starts afresh
+    // there now)
+    if (homing?.lesson === current && !homing.timer) rehome(homing);
     sendPlace();
     w.webContents.send("screen-teach:present", true);
     if (companion?.on) {
@@ -2319,6 +2382,208 @@ function switchBack(current: Lesson, from: { why: SwitchWhy; target: number }): 
   readSwitch(current, mine, Date.now());
 }
 
+/*
+  The lesson's window moved (docIdentity.ts frameMove: dragged by its title bar, Cmd dragged from
+  behind, put elsewhere by a window manager), its size kept. No pixel of it changed, only where it
+  is, so the helper says no new look for it, and until the next read the lesson's pointer and
+  marks stayed where its words had been (the founder, 2026-10-28: the tutor over another app
+  "should be very accurate in the way it points at things" and "super responsive"). The helper
+  says where it is on every ident tick while it goes (IDENT_MS), and everything the lesson holds of
+  it moves by as much at once: its frame, words, lines and latest look here (a tap is judged on
+  them, a sheet hangs from that frame: docIdentity.ts sheetOf), the page's stand-in and marks
+  (screen-teach:moved {run, dx, dy}, the move since the last one said: a page older than it
+  listens for none, and goes by its next read as before), and companion.ts's glance of the window
+  (screen-teach-window-moved). Once it is still (MOVE_SETTLE_MS), the board's place is weighed
+  again, as after a read, and the drag is logged once, by its numbers.
+  Onto another display, into native full screen or out of it, or its display's bounds changed
+  (boardHost.ts displayChanged), every point the page holds is in the old overlay's points, which
+  no move can mend: the run starts afresh where the window is, quietly (rehome), once its frame
+  has been still HOME_SETTLE_MS, since a drag across displays passes over both; dragged back
+  meanwhile, it goes on. A read that finds it there (a turn's, the page's reread) is not passed
+  on, and starts it so too; so does a display rearranged or gone (installScreenTeach). Not while
+  another document seen there is read (its run is put where it is), nor while the student is in
+  another app (as they come back: stepAside) or secure input is on (as it goes off: onIdent).
+*/
+const MOVE_SETTLE_MS = 300;
+const HOME_SETTLE_MS = 500;
+/** Where the window went, it is read this many times at most while it shows no words (still
+ *  drawing). */
+const HOME_TRIES = 2;
+/** One drag of the lesson's window, its moves summed as they come, for its log line. */
+let dragging: { run: number; dx: number; dy: number; steps: number; timer: NodeJS.Timeout } | null = null;
+/** The run to start afresh where its window went, and why (for the log): due once its frame has
+ *  been still HOME_SETTLE_MS (`timer`), or, with none, as the student comes back to it (aside). */
+type Homing = { lesson: Lesson; why: string; tries: number; timer?: NodeJS.Timeout };
+let homing: Homing | null = null;
+
+const movedBox = <T extends Point>(box: T, dx: number, dy: number): T => ({ ...box, x: box.x + dx, y: box.y + dy });
+const movedLines = (lines: ReadonlyArray<ScreenLine>, dx: number, dy: number): ScreenLine[] =>
+  lines.map((line) => (line.words ? { ...movedBox(line, dx, dy), words: line.words.map((word) => movedBox(word, dx, dy)) } : movedBox(line, dx, dy)));
+
+/** Two frames of the lesson's window are of another size (docIdentity.ts MOVE_SAME_SIZE): a resize,
+ *  no move. */
+const otherSize = (a: Rect, b: Rect): boolean => Math.abs(a.w - b.w) > MOVE_SAME_SIZE || Math.abs(a.h - b.h) > MOVE_SAME_SIZE;
+
+/** The helper says where the lesson's window is now (an ident): a move of it moves the lesson with
+ *  it, and a frame that wants the lesson's window elsewhere starts the run afresh there (above). */
+function followFrame(current: Lesson, ident: ScreenIdent): void {
+  const now = identFrame(ident);
+  if (!now) return;
+  const move = frameMove(current.frame, ident);
+  if (move) moveLesson(current, move.dx, move.dy);
+  // (resized: no move, its page laid out afresh, which only a read can tell; but its next drag is
+  // measured from the size and place it has now, not from its last careful read's: a resize may
+  // bring only a quick read, and every drag after it was taken for another resize and followed by
+  // nothing. Its words, lines and look wait for a read)
+  else if (otherSize(now, current.frame)) current.frame = { x: now.x, y: now.y, w: now.w, h: now.h };
+  const away = awayFromHome(current, now);
+  if (away) rehomeSoon(current, away);
+  else if (homing?.lesson === current) {
+    // (back where its run put the lesson's window before it was due: the lesson goes on there)
+    clearTimeout(homing.timer);
+    homing = null;
+  }
+}
+
+/** Everything the lesson holds of its window moves by (dx, dy) points, as the window did (above). */
+function moveLesson(current: Lesson, dx: number, dy: number): void {
+  current.frame = movedBox(current.frame, dx, dy);
+  current.text = current.text ? movedBox(current.text, dx, dy) : null;
+  current.lines = movedLines(current.lines, dx, dy);
+  current.look = { frame: movedBox(current.look.frame, dx, dy), lines: movedLines(current.look.lines, dx, dy), bundle: current.look.bundle };
+  // (a page that loads again, a reload, is given its run's start where the window is now: toLocal
+  // takes an origin off every box, so less the move is the move added)
+  if (pending?.run === current.run) pending = { ...pending, read: toLocal(pending.read, { x: -dx, y: -dy }), click: movedBox(pending.click, dx, dy) };
+  live()?.webContents.send("screen-teach:moved", { run: current.run, dx, dy });
+  appEvents.emit("screen-teach-window-moved", { window: current.window, dx, dy });
+  const was = dragging?.run === current.run ? dragging : null;
+  clearTimeout(dragging?.timer);
+  const drag = { run: current.run, dx: (was?.dx ?? 0) + dx, dy: (was?.dy ?? 0) + dy, steps: (was?.steps ?? 0) + 1 };
+  dragging = {
+    ...drag,
+    timer: setTimeout(() => {
+      dragging = null;
+      console.log(`[screen-teach] run ${drag.run}: its window moved ${Math.round(drag.dx)},${Math.round(drag.dy)} points (${drag.steps} steps)`);
+      if (lesson === current) boardBeside(current);
+    }, MOVE_SETTLE_MS),
+  };
+}
+
+/** A read of the lesson's window where the window is now: one taken before a move the helper has
+ *  said since (its latest ident: frameMove; a read takes a few hundred milliseconds, a drag goes on
+ *  meanwhile) is moved by as much, its words where they are in the window, which a move changes
+ *  none of. Else, once the window is still, nothing would put the lesson right until its next
+ *  read. (A read newer than the ident is moved back to where that says, and the next ident, a
+ *  moment later, moves it on.) */
+function readNow(read: ScreenRead): ScreenRead {
+  const i = lastIdent;
+  if (!i || i.window !== read.window) return read;
+  const move = frameMove(read.frame, i);
+  return move ? toLocal(read, { x: -move.dx, y: -move.dy }) : read;
+}
+
+/** Why the lesson's window, now at `frame` (screen points), wants its overlay elsewhere than its
+ *  run put it (boardHost.ts displayChanged), for the log; or null when it does not. */
+function awayFromHome(current: Lesson, frame: Rect): string | null {
+  const display = displayFor(frame);
+  if (!displayChanged(current.home, display, frame)) return null;
+  if (display.id !== current.home.displayId) return "its window went to another display";
+  return fullScreenFrame(frame, display.bounds) !== current.home.full ? "its window went into full screen or out of it" : "its display changed";
+}
+
+/** The run starts afresh where its window went once its frame has been still HOME_SETTLE_MS
+ *  (rehome; each new word of it waits again). Not while another document seen there is read. */
+function rehomeSoon(current: Lesson, why: string): void {
+  if (lesson !== current || current.switching) return;
+  clearTimeout(homing?.timer);
+  const tries = homing?.lesson === current ? homing.tries : 0;
+  const mine: Homing = { lesson: current, why, tries };
+  mine.timer = setTimeout(() => rehome(mine), HOME_SETTLE_MS);
+  homing = mine;
+}
+
+/** Read the lesson's window where it went, and start its run afresh from there, quietly (no
+ *  greeting, no start sound), at its first words (docIdentity.ts firstBodyPoint), as a run on
+ *  another document starts: the page's place in the lesson is its own, and the Mac app knows
+ *  none of it. It is the same run to the student (ScreenStart.rehomed): a page that knows it
+ *  plays it on only if the one before was playing, so a lesson paused, a run standing on a new
+ *  document's first words (a chat, a form: nothing asked of the server until Play) or a held tutor
+ *  is never started by the green button or a display unplugged. A wait for the student's own turn
+ *  is given up (that run is over). Read back where its run put the overlay after all, the lesson
+ *  goes on; with no words there yet, read again a moment later (HOME_TRIES). Nothing is read while
+ *  secure input is on (a password field has the keys), and nothing starts behind the student's
+ *  back: in another app, or under secure input, by the time it is read, it waits for them
+ *  (`homing` kept with no timer: stepAside, onIdent). */
+function rehome(mine: Homing): void {
+  if (homing !== mine) return;
+  const current = mine.lesson;
+  mine.timer = undefined;
+  if (lesson !== current || current.switching) {
+    homing = null;
+    return;
+  }
+  // (the student in another app: as they come back, stepAside; secure input on: as it goes off,
+  // onIdent)
+  if (aside || lastIdent?.secure) return;
+  homing = null;
+  // (back where it was by the helper's latest word: a read that found it away was older)
+  const said = lastIdent?.window === current.window ? identFrame(lastIdent) : null;
+  if (said && !awayFromHome(current, said)) return;
+  console.log(`[screen-teach] run ${current.run}: ${mine.why}: reading it again there`);
+  current.waiting?.abort();
+  const asked = Date.now();
+  void queued(current, () => readWindow(current.window)).then(
+    (taken) => {
+      if (lesson !== current) return;
+      const read = readNow(taken);
+      if (current.switching || current.switchedAt >= asked) {
+        console.log("[screen-teach] the read where its window went left out: another document came up meanwhile");
+        return;
+      }
+      if (!awayFromHome(current, read.frame)) {
+        console.log(`[screen-teach] run ${current.run}: its window is back where it was: the lesson goes on`);
+        return;
+      }
+      if (!read.lines.length) {
+        if (mine.tries + 1 >= HOME_TRIES) {
+          console.log(`[screen-teach] run ${current.run}: no words where its window went: the lesson goes on`);
+          return;
+        }
+        const again: Homing = { lesson: current, why: mine.why, tries: mine.tries + 1 };
+        again.timer = setTimeout(() => rehome(again), HOME_SETTLE_MS);
+        homing = again;
+        return;
+      }
+      // (gone to another app meanwhile, or a password field took the keys: started as they come
+      // back, or as it goes off, never behind their back; asked again after the wait for the
+      // Accessibility answer, just before it starts: `still`)
+      const canStart = (): boolean => {
+        if (lesson !== current || current.switching) return false;
+        if (!aside && !lastIdent?.secure) return true;
+        if (homing?.lesson !== current) homing = { lesson: current, why: mine.why, tries: mine.tries };
+        console.log(`[screen-teach] run ${current.run}: ${mine.why}: it starts there once the student is back`);
+        return false;
+      };
+      if (!canStart()) return;
+      void openScreenTeach(read, firstBodyPoint(read), { quiet: true, rehomed: true, ...(companion?.on ? { companion: true } : {}), still: canStart });
+    },
+    (e: unknown) => console.warn(`[screen-teach] read where its window went failed: ${e instanceof ScreenReadError ? e.code : (e as Error).message}`),
+  );
+}
+
+/** A display rearranged, its resolution changed, or gone: the lesson's run starts afresh where its
+ *  window is now when its display's bounds are no longer those its run began on, or its window is
+ *  on another display now (as macOS moves a window off a display unplugged, the ident says so
+ *  too). Told by the home its run kept (awayFromHome), so the ident that follows says the same,
+ *  and never by the lesson's window's own bounds, which macOS may set otherwise than asked: no run
+ *  is started again and again. */
+function homeAfterDisplays(): void {
+  const current = lesson;
+  if (!current || !live() || !pageReady) return;
+  const why = awayFromHome(current, current.frame);
+  if (why) rehomeSoon(current, why);
+}
+
 /** The helper's word on the lesson's window (screen.ts ScreenIdent): another document in it or in
  *  front of it starts a switch, a title changed in its digits alone is looked at (checkTitle), the
  *  lesson's own back again cancels a switch, and one waiting reads again at another title there,
@@ -2336,6 +2601,11 @@ function onIdent(ident: ScreenIdent): void {
     identLate = current.run;
     return;
   }
+  // (its window moved: the lesson moves with it first, so a sheet is judged against where the
+  // window is now; and over another display, the run starts afresh there: once secure input is
+  // off, for one that waited on it, rehome)
+  followFrame(current, ident);
+  if (!ident.secure && homing?.lesson === current && !homing.timer) rehome(homing);
   const before = current.top;
   // (a popup or a sheet in front moves no baseline: a window it hid coming back is no new one)
   if (ident.top !== null && (ident.top === current.window || anotherWindow(current, ident))) current.top = ident.top;
@@ -2395,6 +2665,28 @@ function onLessonChanged(changed: ScreenChanged): void {
   }
   if (changed.window !== current.window) return;
   w.webContents.send("screen-teach:changed", { run: current.run, window: changed.window });
+}
+
+/** The lesson's own ⌃⌥ keys (SHORTCUTS, the talk key) pressed this long ago or less: the key the
+ *  helper says went down is one of theirs, no move of the page being read. */
+const SHORTCUT_KEYED_MS = 600;
+
+/** A key went down in the lesson's app, in front (screen.ts "keyed": the first of a run, then one
+ *  at most every KEY_RUN_S while keys keep coming; never which key, never one of the lesson's own
+ *  turn). The page it may have turned or scrolled is said once still (onLessonChanged); the page
+ *  hears of the key at once (screen-teach:keyed), so its ink stops claiming words that may have
+ *  moved (the founder, 2026-10-28: the tutor over another app should be "super responsive" and
+ *  "very accurate in the way it points at things"). Not while aside or while another document
+ *  seen there is read, nor for the lesson's own keys, nor for keys typed into the lesson's own
+ *  window or its board (a question to the tutor: the app being read stays in front, a panel's
+ *  way, and the helper cannot tell where a key went), nor the one that gave the keys back. */
+function onLessonKeyed(keyed: ScreenKeyed): void {
+  const current = lesson;
+  const w = live();
+  if (!current || !w || !pageReady || aside || current.switching || keyed.window !== current.window) return;
+  if (Date.now() - lastShortcutAt < SHORTCUT_KEYED_MS) return;
+  if (screenTeachFocused() || Date.now() - keysMovedAt < KEYS_MOVED_MS) return;
+  w.webContents.send("screen-teach:keyed", { run: current.run });
 }
 
 /**
@@ -2714,6 +3006,34 @@ async function switchRead(current: Lesson, mine: Switching, since: number): Prom
   Companion mode (companion.ts drives it; the window and the lesson stay this module's).
 */
 
+/*
+  The lesson's window stops taking the keys, and goes on taking clicks without coming to the front.
+  On a Mac that is setFocusable(false). On Windows that alone costs every click after the first
+  time: once a window has been focusable, setFocusable(false) makes Chromium answer each press on it
+  "do not activate, and eat the message" (HWNDMessageHandler::OnMouseActivate), so the page hears a
+  mouse-up with no mouse-down, and no click at all. Off and on again, or after a question typed
+  into it, the tutor's card, dock and buttons did nothing (the founder, 2026-10-31: "I am not able
+  to explain or ask a question"), while taps on the app below went on opening cards. So on Windows
+  the window stays activatable, which keeps its presses, and WS_EX_NOACTIVATE, set by the helper
+  (Electron couples the two), keeps a click from bringing it forward: as a window made afresh is.
+*/
+const NO_ACTIVATE_MS = 50;
+
+function stopTakingKeys(w: BrowserWindow): void {
+  w.setFocusable(false);
+  if (process.platform !== "win32") return;
+  w.setFocusable(true);
+  // (a focusable window is back in the taskbar on Windows: this one stays out)
+  w.setSkipTaskbar(true);
+  // (a moment on: the helper reads the window's style and writes it back, and the callers go on
+  // to change that style themselves, its always-on-top among them, which a write begun before
+  // theirs would undo)
+  const id = windowIdOf(w.getMediaSourceId());
+  setTimeout(() => {
+    if (!w.isDestroyed()) noActivateWindow(id);
+  }, NO_ACTIVATE_MS);
+}
+
 /** The companion's rectangle message for the window as it is now. */
 const overlayRect = (w: BrowserWindow): Rect => {
   const b = w.getBounds();
@@ -2742,10 +3062,10 @@ export function showCompanionOverlay(work: Rectangle, from: Point, first: boolea
       // the board during a lesson: out of the always-on-top band for that moment, that is the window
       // already in front; then back above the board, and the blob above it)
       w.setAlwaysOnTop(false);
-      w.setFocusable(false);
+      stopTakingKeys(w);
       overlayAboveBoard();
     } else {
-      w.setFocusable(false);
+      stopTakingKeys(w);
     }
   }
   const overlay = overlayRect(w);
@@ -2865,8 +3185,19 @@ export function companionWentOff(): void {
 /** The last press (a moment ago) was on the page's own controls: so is the tap it makes. */
 export const pressWasThePage = (): boolean => Boolean(companion?.on && lastPress?.page && Date.now() - lastPress.at < PRESS_TAP_MS);
 
-function onPress(_press: ScreenPress): void {
+/** The helper heard the mouse go down (screen.ts "press"). With the companion off it says one only
+ *  on the lesson's window, and the page hears it here (screen-teach:press, as companion.ts tells
+ *  it while the tutor is on): a click in Kindle's or Books' margin turns the page on its release,
+ *  and what the lesson wrote on the page before hides at once, not once the new look is still and
+ *  said (the founder, 2026-10-28: "super responsive"). Not on the page's own controls, nor while
+ *  aside or hidden. */
+function onPress(press: ScreenPress): void {
   lastPress = { at: Date.now(), page: overlayInteractive() };
+  const current = lesson;
+  const w = live();
+  if (companion?.on || !current || !w || !pageReady || aside || press.window !== current.window || overlayInteractive() || !w.isVisible()) return;
+  const b = w.getBounds();
+  w.webContents.send("screen-teach:press", { window: press.window, x: press.x - b.x, y: press.y - b.y });
 }
 
 export function installScreenTeach(): void {
@@ -2878,12 +3209,21 @@ export function installScreenTeach(): void {
   // its page follows (with the companion on or off).
   watchEvents.on("ident", onIdent);
   watchEvents.on("changed", onLessonChanged);
+  // (and a key pressed in its app, before the new look it may bring is still)
+  watchEvents.on("keyed", onLessonKeyed);
   // The talk chord, while the talk key is on (registerTalkKey), and whether it can be used.
   watchEvents.on("chord", onChord);
   watchEvents.on("chordState", onChordState);
   app.on("browser-window-focus", (_event, focused) => onOwnFocus(focused));
   // (before companion.ts's own listener: it asks pressWasThePage of the same press's tap)
   watchEvents.on("press", onPress);
+  // A display rearranged, its resolution changed, or unplugged: the lesson's window may be over
+  // the wrong part of the screen now (homeAfterDisplays). A work area alone changing (the Dock, the
+  // menu bar) moves nothing.
+  screen.on("display-metrics-changed", (_event, _display, changed: string[]) => {
+    if (changed.includes("bounds") || changed.includes("rotation")) homeAfterDisplays();
+  });
+  screen.on("display-removed", () => homeAfterDisplays());
 
   /*
     The Board tab (windows.ts tells of it through appEvents; it imports nothing from here).
@@ -3034,7 +3374,7 @@ export function installScreenTeach(): void {
         const b = liveBoard();
         const boardKeys = Boolean(b && b.place === "float" && b.host.isFocused());
         if (!boardKeys) w.setAlwaysOnTop(false);
-        w.setFocusable(false);
+        stopTakingKeys(w);
         overlayAboveBoard();
         if (had && lesson) bringWindowForward(lesson.window);
       }
@@ -3103,19 +3443,37 @@ export function installScreenTeach(): void {
     const current = lesson;
     if (!current || current.run !== run) return Promise.resolve(null);
     const fast = (typeof opts === "object" && opts !== null ? (opts as { fast?: unknown }).fast : false) === true;
+    // (from the page's ask: its wait behind the lesson's other work counts, for the log)
+    const called = Date.now();
     return queued(current, async () => {
       // (another document seen there since, or being read: no read of this run's)
       const asked = Date.now();
       if (current.switching) return null;
       try {
-        const read = await readWindow(current.window, fast ? { fast: true } : undefined);
+        // (where the window is now, dragged while it was read: readNow; its times and counts
+        // logged from the helper's own answer, as for a turn)
+        const answer = await readWindow(current.window, fast ? { fast: true } : undefined);
+        console.log(rereadLine(current.run, answer, fast, Date.now() - called));
+        const read = readNow(answer);
         if (current.switching || current.switchedAt >= asked) return null;
+        // (its window gone over another display, or full screen or back: the run starts afresh
+        // there, and the page gets nothing in the old overlay's points: rehomeSoon)
+        const away = lesson === current ? awayFromHome(current, read.frame) : null;
+        if (away) {
+          rehomeSoon(current, away);
+          return null;
+        }
         if (!fast) noteRead(current, read);
-        // (a quick one is the window's latest look all the same: another document is told by it.
-        // Not one taken as another title came up, before the helper said so: that look is the
-        // other document's, and would pass it for the lesson's own)
-        else if (lesson === current && ["none", "weak"].includes(titleChange(current.title, read.title, current.app))) {
-          current.look = { frame: read.frame, lines: read.lines, bundle: read.bundle };
+        else if (lesson === current) {
+          // (a quick one is the window's latest look all the same: another document is told by it.
+          // Not one taken as another title came up, before the helper said so: that look is the
+          // other document's, and would pass it for the lesson's own)
+          if (["none", "weak"].includes(titleChange(current.title, read.title, current.app))) {
+            current.look = { frame: read.frame, lines: read.lines, bundle: read.bundle };
+          }
+          // (and its window's size, whatever it shows: a careful read begun before a resize may
+          // have set the old one after its last ident, and a drag is measured from it: followFrame)
+          if (otherSize(read.frame, current.frame)) current.frame = { ...read.frame };
         }
         const w = live();
         if (lesson === current && w && !fast) appEvents.emit("screen-teach-read", read);

@@ -20,6 +20,7 @@ import {
   windowIdOf,
   type Point,
 } from "./companionPlace";
+import { overlayArea } from "./boardHost";
 import { titleChange } from "./docIdentity";
 import { appEvents } from "./events";
 import { ensureScreenReading, screenPanelWindow } from "./explain";
@@ -41,6 +42,7 @@ import {
   type ScreenScroll,
   type ScreenTap,
 } from "./screen";
+import { toLocal, withoutDrawing } from "./screenRead";
 import {
   boardWindow,
   closeScreenTeach,
@@ -124,6 +126,9 @@ const CHANGED_GLANCE_MS = 2_000;
 const TAP_SETTLE_MS = 1_500;
 /** A glance that found no words over one that had some is tried once more this much later. */
 const GLANCE_AGAIN_MS = 300;
+/** The lesson's window dragged: its glance, moved with it, goes to the page again once the drag
+ *  has been still this long. */
+const MOVED_GLANCE_MS = 250;
 /** The tapped row's words a pick may carry (explainAt `row`). */
 const ROW_CHARS = 300;
 /** The blob starts to go this long after the tutor hops out of it (its own fade is about as long), */
@@ -190,6 +195,8 @@ const pageHas = new Set<number>();
 const inFlight = new Map<number, { again: boolean; keepAgain: boolean }>();
 let dwell: NodeJS.Timeout | undefined;
 const afterScroll = new Map<number, NodeJS.Timeout>();
+/** The moved glance of the lesson's window waiting for its drag to stop (onLessonMoved). */
+let movedGlance: NodeJS.Timeout | undefined;
 /** The last glance a "changed" brought on, by window, and the one waiting its turn (CHANGED_GLANCE_MS). */
 const changedGlance = new Map<number, { at: number; timer?: NodeJS.Timeout; keepCard?: boolean }>();
 /** A careful read taken from a tap's release (startCarefulRead): the release it is for (`id`; null
@@ -730,13 +737,18 @@ function clearCaches(): void {
 /** The cursor went to another display with no lesson on: the window follows it there, and the
  *  page gets its glances again in its new points. During a lesson it stays on the lesson's. The
  *  area the window covers is screenTeach.ts's to say (companionArea): a lesson started from a
- *  pick meanwhile may have moved it. */
+ *  pick meanwhile may have moved it. Over a window in native full screen it covers all of the
+ *  display, as a lesson there does (boardHost.ts overlayArea), and its work area over any other;
+ *  over nothing (the desktop, the menu bar shown over a full-screen app) it stays as it is on that
+ *  display, either way. */
 function followDisplay(): void {
   const area = companionArea();
   if (!on || !area || screenTeachLesson()) return;
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
-  if (sameArea(area, display.workArea)) return;
-  moveTo(display.workArea);
+  const frame = hovered?.window != null ? hovered.frame : null;
+  const want = frame ? overlayArea(display, frame) : null;
+  if (want ? sameArea(area, want) : sameArea(area, display.workArea) || sameArea(area, display.bounds)) return;
+  moveTo(want ?? display.workArea);
 }
 
 function moveTo(area: Rectangle): void {
@@ -750,10 +762,13 @@ function moveTo(area: Rectangle): void {
 /** `keepCard`: the glance is of the new look the card's own tap brought on (onChanged): the page
  *  keeps the card. `tap`: it is the careful read taken at that release (startCarefulRead). `empty`:
  *  a read with no lines found again on the second look (GLANCE_AGAIN_MS): the window is blank now,
- *  and the page lets it replace a glance with lines (one with no lines otherwise never does). */
+ *  and the page lets it replace a glance with lines (one with no lines otherwise never does). Never
+ *  the page's drawing (paper, rules, ink), even from an accurate read: the lesson's own reads carry
+ *  it (screenRead.ts withoutDrawing). */
 function sendGlance(window: number, glance: Glance, keepCard = false, tap?: number, empty = false): void {
-  const read = localRead(glance.read);
-  if (!read) return;
+  const local = localRead(glance.read);
+  if (!local) return;
+  const read = withoutDrawing(local);
   sendToPage("screen-teach:glance", {
     window,
     read,
@@ -885,6 +900,26 @@ function onLessonRead(read: unknown): void {
   glances.set(r.window, kept);
   sendGlance(r.window, kept);
   refreshObserve();
+}
+
+/** The lesson's window was moved by (dx, dy) points, its size kept (screenTeach.ts followFrame):
+ *  its glance moves with it at once (a release there is routed by it: tapOnWords), and goes to the
+ *  page again once the drag has been still MOVED_GLANCE_MS (taps there are placed by it). The
+ *  careful reads taken for taps there are stale: their words are where the window was. */
+function onLessonMoved(moved: unknown): void {
+  const m = (typeof moved === "object" && moved !== null ? moved : {}) as { window?: unknown; dx?: unknown; dy?: unknown };
+  if (!on || typeof m.window !== "number" || typeof m.dx !== "number" || typeof m.dy !== "number") return;
+  const window = m.window;
+  markReadStale(window);
+  const kept = glances.get(window);
+  if (!kept) return;
+  // (toLocal takes an origin off every box: less the move is the move added)
+  glances.set(window, { ...kept, read: toLocal(kept.read, { x: -m.dx, y: -m.dy }) });
+  clearTimeout(movedGlance);
+  movedGlance = setTimeout(() => {
+    const now = glances.get(window);
+    if (on && now && pageHas.has(window)) sendGlance(window, now);
+  }, MOVED_GLANCE_MS);
 }
 
 // MARK: press, tap, scroll, changed
@@ -1139,7 +1174,8 @@ function onScroll(scroll: ScreenScroll): void {
   markReadStale(scroll.window);
   // (the lesson's own window: screenTeach.ts follows it)
   if (scroll.window === screenTeachLesson()?.window) return;
-  sendToPage("screen-teach:window-scroll", { window: scroll.window, dy: scroll.dy, dx: scroll.dx });
+  // (`lines`: a mouse wheel's, each taken as 40 points in dy; 0 for a trackpad)
+  sendToPage("screen-teach:window-scroll", { window: scroll.window, dy: scroll.dy, dx: scroll.dx, lines: scroll.lines });
   const kept = glances.get(scroll.window);
   if (kept) kept.stale = true;
   clearTimeout(afterScroll.get(scroll.window));
@@ -1313,14 +1349,16 @@ async function explainAt(value: unknown): Promise<ExplainAnswer> {
   // (paused meanwhile: the pick is dropped, or its lesson would start and undo the pause)
   if (!on || held) return { ok: false, reason: "off" };
   if (isPrivateApp(read.bundle)) return { ok: false, reason: "private" };
-  // The lesson's window goes over the display of the window it teaches.
+  // The lesson's window goes over the display of the window it teaches (all of it, for a window
+  // in native full screen: openScreenTeach covers the same).
   const display = screen.getDisplayMatching({
     x: Math.round(read.frame.x),
     y: Math.round(read.frame.y),
     width: Math.max(1, Math.round(read.frame.w)),
     height: Math.max(1, Math.round(read.frame.h)),
   });
-  if (!sameArea(companionArea(), display.workArea)) moveTo(display.workArea);
+  const area = overlayArea(display, read.frame);
+  if (!sameArea(companionArea(), area)) moveTo(area);
   void openScreenTeach(read, at, { choice, quiet: greeted, companion: true, ...(row ? { row } : {}), ...(stale ? { stale: true } : {}) });
   greeted = true;
   return { ok: true };
@@ -1359,6 +1397,8 @@ export function installCompanion(): void {
   // (another document in a window it knows, while a lesson watches one)
   watchEvents.on("ident", onIdent);
   appEvents.on("screen-teach-read", onLessonRead);
+  // (and its window moved: its glance with it)
+  appEvents.on("screen-teach-window-moved", onLessonMoved);
   // (a lesson restarted from a tap on its window starts from the read taken at that tap's release)
   useCarefulReads(carefulReadOf);
   // A lesson started or ended: its window is watched for a new look, or no longer.
@@ -1397,9 +1437,16 @@ export function installCompanion(): void {
     const b = liveBlob();
     if (process.platform === "win32" && b && b.isVisible()) b.setAlwaysOnTop(true, "floating", 2);
   });
-  // A display unplugged or rearranged: the blob stays on a screen.
-  screen.on("display-removed", () => reclampBlob());
-  screen.on("display-metrics-changed", () => reclampBlob());
+  // A display unplugged or rearranged: the blob stays on a screen, and the window, with no lesson
+  // on, over the cursor's display as it is now.
+  screen.on("display-removed", () => {
+    reclampBlob();
+    followDisplay();
+  });
+  screen.on("display-metrics-changed", () => {
+    reclampBlob();
+    followDisplay();
+  });
 
   // Mac only: on Windows Ctrl+Alt+E is AltGr+E, the euro sign on many keyboards, and a global
   // shortcut would take it from every app. There the tab bar's button and the blob turn the tutor on.

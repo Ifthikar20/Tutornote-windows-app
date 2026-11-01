@@ -231,6 +231,31 @@ namespace Tutornote.Screen
             return Math.Max(1, lines) * 100.0 / 3.0;
         }
 
+        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] public static extern IntPtr SetWindowLongPtr(IntPtr h, int index, IntPtr value);
+
+        /** An extended window style with the one that keeps a click from bringing the window forward. */
+        public static long WithNoActivate(long style) { return style | WS_EX_NOACTIVATE; }
+
+        /** How many lines a wheel's notch is as Windows is set (a screen at a time: one). */
+        public static double WheelLines()
+        {
+            uint lines = 3;
+            try { if (!SystemParametersInfo(SPI_GETWHEELSCROLLLINES, 0, ref lines, 0)) lines = 3; } catch (Exception) { lines = 3; }
+            return lines == 0xFFFFFFFF ? 1 : Math.Max(1, lines);
+        }
+
+        [StructLayout(LayoutKind.Sequential)] struct LASTINPUTINFO { public int cbSize; public uint dwTime; }
+        [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
+
+        /** When the last input of any kind came, in GetTickCount's milliseconds (when, never what). */
+        public static bool LastInputTick(out uint tick)
+        {
+            var info = new LASTINPUTINFO { cbSize = Marshal.SizeOf(typeof(LASTINPUTINFO)) };
+            bool ok = GetLastInputInfo(ref info);
+            tick = info.dwTime;
+            return ok;
+        }
+
         [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint from, uint to, bool attach);
         [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
         [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);

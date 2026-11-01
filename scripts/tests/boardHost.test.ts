@@ -10,11 +10,16 @@ import {
   boardFileWith,
   boardMoveOf,
   boardPlaceFor,
+  boardPlaceMsg,
   boardPrefsOf,
   coversReading,
+  displayChanged,
   fullScreenFrame,
   leavesTab,
   mainCanHold,
+  NOTCH_BAND,
+  overlayArea,
+  overlayHome,
   tabOrder,
   type MainLook,
   type Reading,
@@ -58,6 +63,122 @@ test("fullScreenFrame: a window that fills its display, give or take 2 points", 
   assert.equal(fullScreenFrame({ x: 1, y: 0, w: 1440, h: 899 }, DISPLAY), true);
   assert.equal(fullScreenFrame({ x: 0, y: 25, w: 1440, h: 875 }, DISPLAY), false);
   assert.equal(fullScreenFrame({ x: 80, y: 60, w: 640, h: 800 }, DISPLAY), false);
+});
+
+/*
+  A MacBook with a camera notch, 1512 x 982 points, its menu bar 38 points tall over a 70 point
+  Dock. macOS keeps a window in native full screen under the camera housing: the founder's Kindle
+  in full screen was a window at (0, 36), 1512 x 946 (helpers/screen/main.swift's selftest).
+*/
+const NOTCHED = { id: 3, bounds: { x: 0, y: 0, width: 1512, height: 982 }, workArea: { x: 0, y: 38, width: 1512, height: 874 } };
+const KINDLE_FULL = { x: 0, y: 36, w: 1512, h: 946 };
+
+test("fullScreenFrame: a window in full screen under a camera notch, not one zoomed under a plain menu bar", () => {
+  assert.equal(fullScreenFrame(KINDLE_FULL, NOTCHED.bounds), true);
+  // (the notch's band, at either end; the left, right and bottom edges still the display's)
+  assert.equal(fullScreenFrame({ x: 0, y: NOTCH_BAND.min, w: 1512, h: 982 - NOTCH_BAND.min }, NOTCHED.bounds), true);
+  assert.equal(fullScreenFrame({ x: 0, y: NOTCH_BAND.max, w: 1512, h: 982 - NOTCH_BAND.max }, NOTCHED.bounds), true);
+  assert.equal(fullScreenFrame({ x: 0, y: NOTCH_BAND.max + 10, w: 1512, h: 982 - NOTCH_BAND.max - 10 }, NOTCHED.bounds), false);
+  assert.equal(fullScreenFrame({ x: 0, y: 36, w: 1512, h: 876 }, NOTCHED.bounds), false);
+  assert.equal(fullScreenFrame({ x: 40, y: 36, w: 1472, h: 946 }, NOTCHED.bounds), false);
+  // (a plain menu bar's 24 or 25 points is no notch: a window zoomed under it is no full screen)
+  assert.equal(fullScreenFrame({ x: 0, y: 24, w: 1440, h: 876 }, DISPLAY), false);
+  // (a notched display placed below another: its band counts from its own top)
+  assert.equal(fullScreenFrame({ x: 0, y: 936, w: 1512, h: 946 }, { x: 0, y: 900, width: 1512, height: 982 }), true);
+});
+
+/*
+  The lesson's own window: over display 1's work area (under a 25 point menu bar, over a 70 point
+  Dock), or all of display 1 for a window there in native full screen.
+*/
+const ONE = { id: 1, bounds: DISPLAY, workArea: { x: 0, y: 25, width: 1440, height: 805 } };
+const TWO = { id: 2, bounds: { x: 1440, y: 0, width: 1440, height: 900 }, workArea: { x: 1440, y: 25, width: 1440, height: 875 } };
+const FULL = { x: 0, y: 0, w: 1440, h: 900 };
+
+test("overlayArea: the work area, but all of the display for a window in native full screen", () => {
+  assert.deepEqual(overlayArea(ONE, READING.frame), ONE.workArea);
+  assert.deepEqual(overlayArea(ONE, FULL), DISPLAY);
+  assert.deepEqual(overlayArea(TWO, { x: 1440, y: 0, w: 1440, h: 900 }), TWO.bounds);
+  assert.deepEqual(overlayArea(TWO, { x: 1500, y: 60, w: 900, h: 700 }), TWO.workArea);
+  // (a copy: Electron's own rectangle is never handed on)
+  assert.notEqual(overlayArea(ONE, READING.frame), ONE.workArea);
+  // (a window as tall as the work area is no full screen: the menu bar is above it)
+  assert.deepEqual(overlayArea(ONE, { x: 0, y: 25, w: 1440, h: 805 }), ONE.workArea);
+  // (the founder's Kindle in full screen under the notch: all of the display, not the work area)
+  assert.deepEqual(overlayArea(NOTCHED, KINDLE_FULL), NOTCHED.bounds);
+  assert.deepEqual(overlayArea(NOTCHED, { x: 100, y: 60, w: 900, h: 700 }), NOTCHED.workArea);
+});
+
+test("displayChanged: another display, or full screen in or out; a move on the same display is none", () => {
+  const home = overlayHome(ONE, READING.frame);
+  assert.deepEqual(home, { displayId: 1, full: false, bounds: DISPLAY });
+  // (a copy: Electron's own rectangle is never kept)
+  assert.notEqual(home.bounds, ONE.bounds);
+  assert.equal(displayChanged(home, ONE, { ...READING.frame, x: 400, y: 90 }), false);
+  assert.equal(displayChanged(home, TWO, { ...READING.frame, x: 1600 }), true);
+  assert.equal(displayChanged(home, ONE, FULL), true);
+  const full = overlayHome(ONE, FULL);
+  assert.deepEqual(full, { displayId: 1, full: true, bounds: DISPLAY });
+  assert.equal(displayChanged(full, ONE, FULL), false);
+  assert.equal(displayChanged(full, ONE, READING.frame), true);
+  // (the work area alone is never asked: the Dock or the menu bar changing moves nothing)
+  assert.equal(displayChanged(home, { ...ONE, workArea: { x: 0, y: 25, width: 1440, height: 875 } }, READING.frame), false);
+  // (into full screen under a camera notch, and out of it)
+  const windowed = overlayHome(NOTCHED, { x: 100, y: 60, w: 900, h: 700 });
+  assert.equal(displayChanged(windowed, NOTCHED, KINDLE_FULL), true);
+  assert.equal(displayChanged(overlayHome(NOTCHED, KINDLE_FULL), NOTCHED, { x: 100, y: 60, w: 900, h: 700 }), true);
+  assert.equal(displayChanged(overlayHome(NOTCHED, KINDLE_FULL), NOTCHED, KINDLE_FULL), false);
+});
+
+test("displayChanged: the same display at another resolution, or put elsewhere among the displays", () => {
+  const home = overlayHome(ONE, READING.frame);
+  // ("More Space": the same display, the same window, more points)
+  assert.equal(displayChanged(home, { ...ONE, bounds: { x: 0, y: 0, width: 1800, height: 1169 } }, READING.frame), true);
+  // (display 2 moved to the left of display 1: the window read there with it)
+  const two = overlayHome(TWO, { x: 1600, y: 60, w: 900, h: 700 });
+  assert.equal(displayChanged(two, { ...TWO, bounds: { x: -1440, y: 0, width: 1440, height: 900 } }, { x: -1280, y: 60, w: 900, h: 700 }), true);
+  // (a window in full screen refilling its display at the new size: the display changed all the same)
+  assert.equal(displayChanged(overlayHome(ONE, FULL), { ...ONE, bounds: { x: 0, y: 0, width: 1800, height: 1169 } }, { x: 0, y: 0, w: 1800, h: 1169 }), true);
+});
+
+/*
+  The page's message about its board: its own window's frame in the lesson window's points, while it
+  shows over that window (the lesson's window over display 1's work area, from y 25).
+*/
+const LESSON = ONE.workArea;
+const PLACE = { where: "float" as const, canMove: true, covering: false, app: "Preview" };
+
+test("boardPlaceMsg: a board in its own window over the lesson's says where, in the lesson's points", () => {
+  const msg = boardPlaceMsg({ ...PLACE, floating: { x: 760, y: 120, width: 620, height: 640 }, lesson: LESSON });
+  assert.deepEqual(msg, { where: "float", canMove: true, covering: false, app: "Preview", bounds: { x: 760, y: 95, w: 620, h: 640 } });
+  // (hanging over the lesson window's edge, partly off it: all of its frame, as it is)
+  assert.deepEqual(boardPlaceMsg({ ...PLACE, floating: { x: 1100, y: 10, width: 620, height: 640 }, lesson: LESSON }).bounds, {
+    x: 1100,
+    y: -15,
+    w: 620,
+    h: 640,
+  });
+  // (the lesson's window over all of display 2, in native full screen there)
+  assert.deepEqual(boardPlaceMsg({ ...PLACE, floating: { x: 1500, y: 40, width: 400, height: 300 }, lesson: TWO.bounds }).bounds, {
+    x: 60,
+    y: 40,
+    w: 400,
+    h: 300,
+  });
+});
+
+test("boardPlaceMsg: no bounds in its tab, hidden, on another display, or with no lesson window", () => {
+  const away = { x: 1500, y: 120, width: 620, height: 640 };
+  const none: Array<[string, Parameters<typeof boardPlaceMsg>[0]]> = [
+    ["in its tab", { ...PLACE, where: "tab", floating: { x: 760, y: 120, width: 620, height: 640 }, lesson: LESSON }],
+    ["hidden", { ...PLACE, floating: null, lesson: LESSON }],
+    ["on display 2", { ...PLACE, floating: away, lesson: LESSON }],
+    ["only touching the lesson window's edge", { ...PLACE, floating: { x: 1440, y: 120, width: 620, height: 640 }, lesson: LESSON }],
+    ["no lesson window", { ...PLACE, floating: { x: 760, y: 120, width: 620, height: 640 }, lesson: null }],
+  ];
+  for (const [why, a] of none) assert.equal("bounds" in boardPlaceMsg(a), false, why);
+  // (the rest as it always was, and no app's name when there is none)
+  assert.deepEqual(boardPlaceMsg({ ...PLACE, app: "", where: "tab", floating: null, lesson: LESSON }), { where: "tab", canMove: true, covering: false });
 });
 
 test("coversReading: another display never covers", () => {

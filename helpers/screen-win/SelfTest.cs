@@ -136,9 +136,175 @@ namespace Tutornote.Screen
             }
 
             AnswerLines();
+            WheelsAndKeys();
+            if (Ocr.Engine() != null) PageDrawing();
 
             Console.WriteLine(failed == 0 ? "all checks passed" : failed + " checks failed");
             return failed == 0 ? 0 : 1;
+        }
+
+        // A wheel's step, and the keys that burst a window (the Mac's selftest, on made up numbers)
+        static void WheelsAndKeys()
+        {
+            Watcher.WheelStep notch = Watcher.Wheel(-120, false, 100, 3);
+            Check("a notch down the document is 100 points up, said as 3 lines", notch.Dy == 100 && notch.Dx == 0 && notch.Lines == 3 && notch.Scrolls);
+            Check("a notch back up is 3 lines the other way", Watcher.Wheel(120, false, 100, 3).Lines == -3);
+            Check("half a notch of a fine wheel is half as far", Watcher.Wheel(-60, false, 100, 3).Dy == 50 && Watcher.Wheel(-60, false, 100, 3).Lines == 1.5);
+            Watcher.WheelStep pan = Watcher.Wheel(120, true, 100, 3);
+            Check("a sideways wheel is said, with no lines, and is no scroll up or down", pan.Dx == 100 && pan.Dy == 0 && pan.Lines == 0 && !pan.Scrolls);
+            Check("a wheel event that moved nothing is no scroll", !Watcher.Wheel(0, false, 100, 3).Scrolls);
+            Check("a scroll just before a new look explains it", Watcher.ScrollExplains(10200, 10000, false));
+            Check("a scroll 2 s before does not", !Watcher.ScrollExplains(12000, 10000, false));
+            Check("no scroll explains nothing", !Watcher.ScrollExplains(10000, -1, false));
+            Check("a scroll explains nothing in a window that turns by the page", !Watcher.ScrollExplains(10200, 10000, true));
+
+            Check("a key 100 ms ago in the window's app bursts it", Watcher.KeyBurstDue(100, 678, 678));
+            Check("not one pressed in another app", !Watcher.KeyBurstDue(100, 679, 678));
+            Check("nor one 500 ms ago", !Watcher.KeyBurstDue(500, 678, 678));
+            Check("nor with the window's app not known", !Watcher.KeyBurstDue(100, 678, 0));
+            Check("nor with no app in front", !Watcher.KeyBurstDue(100, 0, 678));
+            Check("the first key is said", Watcher.KeyRunStarts(10000, -1));
+            // A key held down: the first press, then its repeats every 50 ms after a 400 ms wait.
+            int told = 0;
+            long last = -1;
+            foreach (long keyAt in new long[] { 10000, 10400, 10450, 10500, 10550, 10600, 10650, 10700, 10750 })
+                if (Watcher.KeyRunStarts(keyAt, last)) { told++; last = keyAt; }
+            Check("a key held down is said again while it is held", told == 3);
+            Check("the same key seen on the next tick is not said again", !Watcher.KeyRunStarts(10600, 10600));
+            Check("a key while a lesson's turn by a key goes on is ours", Watcher.KeyIsOurs(10000, 1, -1));
+            Check("so is one that went down before that turn ended", Watcher.KeyIsOurs(10000, 0, 10500));
+            Check("not one after it ended", !Watcher.KeyIsOurs(11000, 0, 10500));
+            Check("nor one with no turn by a key ever", !Watcher.KeyIsOurs(10000, 0, -1));
+
+            Check("a window that takes no activation keeps the rest of its style", Win32.WithNoActivate(0x00280008) == 0x08280008 && Win32.WithNoActivate(0x08000000) == 0x08000000);
+
+            // A key is the last input no mouse event explains (never which key: none is listened to).
+            Check("input with no mouse event near it is a key", Input.NoMouseExplains(1000, 500, 1100));
+            Check("input the mouse explains is not", !Input.NoMouseExplains(1000, 990, 1100));
+            Check("nor one so new a mouse event may still be on its way", !Input.NoMouseExplains(1000, 500, 1010));
+            Check("nor one a minute old", !Input.NoMouseExplains(1000, 500, 70000));
+            Check("the clock wrapping changes nothing", Input.NoMouseExplains(10, 0xFFFFFF00u, 110));
+        }
+
+        // The page's paper and ink (Geometry.cs), the Mac's geometrySelfTest on windows drawn here and
+        // read by Windows' reader: a page with two paragraphs of made up words, a 200 point rule under
+        // the first, a filled box between them, and under it the top of the next page (no words).
+        static void PageDrawing()
+        {
+            string[] list = "river market garden window paper candle silver morning yellow travel kitchen pencil orange thunder".Split(' ');
+            var rows = new string[12];
+            var baselines = new float[12];
+            for (int i = 0; i < 12; i++)
+            {
+                var w = new string[6];
+                for (int k = 0; k < 6; k++) w[k] = list[(i * 5 + k * 3) % list.Length];
+                rows[i] = string.Join(" ", w);
+                baselines[i] = (i < 6 ? 110 : 364) + i * 26;
+            }
+            RectangleF page = new RectangleF(150, 40, 500, 900), next = new RectangleF(150, 960, 500, 40);
+            RectangleF rule = new RectangleF(200, 262, 200, 1), box = new RectangleF(220, 320, 160, 120);
+
+            Func<int, int, int, RectangleF[], RectangleF?, double, Picture> picture = (viewer, paper, ink, pages, bar, scale) =>
+                Paint((int)(800 * scale), (int)(1000 * scale), g =>
+                {
+                    g.ScaleTransform((float)scale, (float)scale);
+                    g.Clear(Color.FromArgb(viewer, viewer, viewer));
+                    using (var paperBrush = new SolidBrush(Color.FromArgb(paper, paper, paper)))
+                    using (var inkBrush = new SolidBrush(Color.FromArgb(ink, ink, ink)))
+                    using (var font = new Font("Georgia", 16, GraphicsUnit.Pixel))
+                    {
+                        foreach (RectangleF p in pages) g.FillRectangle(paperBrush, p);
+                        if (bar.HasValue) g.FillRectangle(paperBrush, bar.Value);
+                        g.FillRectangle(inkBrush, rule);
+                        g.FillRectangle(inkBrush, box);
+                        for (int i = 0; i < 12; i++) g.DrawString(rows[i], font, inkBrush, 200, baselines[i] - 18);
+                        if (bar.HasValue) g.DrawString("Reading notes", font, inkBrush, 40, 8);
+                    }
+                });
+            Func<RectangleF, double, double, RECT> on = (r, s, unused) => new RECT
+            {
+                Left = (int)Math.Round((100 + r.X) * s), Top = (int)Math.Round((50 + r.Y) * s),
+                Right = (int)Math.Round((100 + r.Right) * s), Bottom = (int)Math.Round((50 + r.Bottom) * s),
+            };
+            Func<int, int, RECT, bool> near = (a, b, unused) => Math.Abs(a - b) <= 2;
+
+            Action<string, Picture, double> checkPage = (what, pic, scale) =>
+            {
+                int left = (int)(100 * scale), top = (int)(50 * scale);
+                List<OcrLine> lines = Ocr.Read(pic, left, top, 1);
+                PageGeometry g = Geometry.Of(pic, left, top, scale, lines);
+                Check(what + ": the reader reads its 12 rows", lines.FindAll(l => Geometry.HasLetterOrDigit(l.T)).Count == 12);
+                if (g == null) { Check(what + ": its geometry is told", false); return; }
+                RECT want = on(page, scale, 0);
+                Check(what + ": the page's rectangle is told within 2 pixels, not the next page's",
+                    g.HasPaper && near(g.PaperX, want.Left, want) && near(g.PaperY, want.Top, want) && near(g.PaperX + g.PaperW, want.Right, want) && near(g.PaperY + g.PaperH, want.Bottom, want));
+                Check(what + ": the grid lies over the paper told, in cells of 8 points", g.Ink.X == g.PaperX && g.Ink.Y == g.PaperY
+                    && g.Ink.Cell == (int)Math.Round(8 * scale) && g.Ink.Cols == (g.PaperW + g.Ink.Cell - 1) / g.Ink.Cell && g.Ink.Rows == (g.PaperH + g.Ink.Cell - 1) / g.Ink.Cell);
+                RECT boxOn = on(box, scale, 0), ruleOn = on(rule, scale, 0);
+                ruleOn.Left -= 1; ruleOn.Right += 1; ruleOn.Top -= 2; ruleOn.Bottom += 2;
+                int inside = 0, insideInked = 0, stray = 0, overWords = 0;
+                for (int r = 0; r < g.Ink.Rows; r++)
+                    for (int c = 0; c < g.Ink.Cols; c++)
+                    {
+                        int x = g.Ink.X + c * g.Ink.Cell, y = g.Ink.Y + r * g.Ink.Cell, cell = g.Ink.Cell;
+                        bool inked = g.Ink.Inked(c, r);
+                        if (x >= boxOn.Left && y >= boxOn.Top && x + cell <= boxOn.Right && y + cell <= boxOn.Bottom) { inside++; if (inked) insideInked++; }
+                        if (!inked) continue;
+                        bool onBox = x < boxOn.Right && x + cell > boxOn.Left && y < boxOn.Bottom && y + cell > boxOn.Top;
+                        bool onRule = x < ruleOn.Right && x + cell > ruleOn.Left && y < ruleOn.Bottom && y + cell > ruleOn.Top;
+                        if (onBox || onRule) continue;
+                        stray++;
+                        foreach (OcrLine l in lines) foreach (OcrWord w in l.Words) if (x < w.X + w.W && x + cell > w.X && y < w.Y + w.H && y + cell > w.Y) overWords++;
+                    }
+                Check(what + ": the filled box sets every cell inside it", inside > 0 && insideInked == inside);
+                Check(what + ": nothing else is inked, and the cells over the words stay clear", stray == 0 && overWords == 0);
+                List<Rule> ruled = Rules.Of(pic, left, top, scale, lines, Diff.Ground(Capture.Grey(pic))).FindAll(r => Geometry.OnPaper(r, g));
+                Dictionary<string, object> sent = ruled.Count == 1 ? Geometry.RuleBox(ruled[0]) : null;
+                Check(what + ": the 200 point rule is found, as a thin rect, and the words and the box are not", sent != null
+                    && Math.Abs(J.Num(sent, "x", 0) - on(rule, scale, 0).Left) <= 2 && Math.Abs(J.Num(sent, "y", 0) - on(rule, scale, 0).Top) <= 2
+                    && Math.Abs(J.Num(sent, "w", 0) - 200 * scale) <= 2 && J.Num(sent, "h", 0) >= 1 && J.Num(sent, "h", 0) <= 3 * scale);
+            };
+
+            var both = new[] { page, next };
+            Picture white = picture(153, 255, 26, both, null, 1);
+            checkPage("a white page on a grey viewer", white, 1);
+            List<OcrLine> whiteLines = Ocr.Read(white, 100, 50, 1);
+            PageGeometry told = Geometry.Of(white, 100, 50, 1, whiteLines);
+            if (told != null)
+            {
+                var fields = new Dictionary<string, object>();
+                Geometry.Fields(told, fields);
+                var ink = (Dictionary<string, object>)fields["ink"];
+                byte[] bytes = Convert.FromBase64String((string)ink["bits"]);
+                bool same = (int)ink["cell"] == 8 && (int)ink["cols"] == told.Ink.Cols && (int)ink["rows"] == told.Ink.Rows;
+                for (int i = 0; i < told.Ink.Cols * told.Ink.Rows; i++)
+                    if (((bytes[i >> 3] & (1 << (i & 7))) != 0) != told.Ink.Inked(i % told.Ink.Cols, i / told.Ink.Cols)) same = false;
+                Check("the grid goes as base64, cell r * cols + c at bit (i & 7) of byte i >> 3", same);
+            }
+            // A night theme: a dark page, light words and marks, on a dark grey viewer.
+            checkPage("a dark page", picture(84, 31, 230, both, null, 1), 1);
+            // A window at 150%: every number scales.
+            checkPage("a white page at 150%", picture(153, 255, 26, both, null, 1.5), 1.5);
+            // Kindle's way: the page fills the window.
+            Picture fills = picture(255, 255, 26, new RectangleF[0], null, 1);
+            PageGeometry filling = Geometry.Of(fills, 100, 50, 1, Ocr.Read(fills, 100, 50, 1));
+            Check("a page that fills the window has no paper told, and its grid covers the window",
+                filling != null && !filling.HasPaper && filling.Ink.X == 100 && filling.Ink.Y == 50 && filling.Ink.Cols == 100 && filling.Ink.Rows == 125);
+            // A browser's white tab strip over its dark PDF viewer: no part of the page.
+            RectangleF below = new RectangleF(150, 92, 500, 888);
+            Picture barred = picture(84, 255, 26, new[] { below }, new RectangleF(0, 0, 800, 80), 1);
+            PageGeometry bars = Geometry.Of(barred, 100, 50, 1, Ocr.Read(barred, 100, 50, 1));
+            Check("under a browser's white bars, the page's rectangle is told, not the window's width",
+                bars != null && bars.HasPaper && Math.Abs(bars.PaperX - 250) <= 2 && Math.Abs(bars.PaperW - 500) <= 2 && Math.Abs(bars.PaperY - 142) <= 2);
+            // A page with no one ground: nothing of it is sent.
+            Picture speckle = Paint(400, 200, g =>
+            {
+                var noise = new Random(7);
+                for (int y = 0; y < 200; y += 4) for (int x = 0; x < 400; x += 4)
+                    using (var b = new SolidBrush(Color.FromArgb(noise.Next(256), noise.Next(256), noise.Next(256)))) g.FillRectangle(b, x, y, 4, 4);
+            });
+            var made = new List<OcrLine> { new OcrLine { T = "words", X = 10, Y = 10, W = 300, H = 120 } };
+            Check("words on no one ground: no geometry", Geometry.Of(speckle, 0, 0, 1, made) == null);
         }
 
         // Answer lines (Rules.cs), on worksheets drawn here at 100% and at 150%

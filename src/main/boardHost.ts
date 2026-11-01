@@ -9,14 +9,19 @@
   there to hold it and lies clear of what is read; else it floats beside the words. A student who
   chose Pop out keeps it floating until they choose Open in Tutornote.
 
+  And where the lesson's own see-through window goes, over the display of what is read
+  (overlayArea), and when it must go elsewhere (displayChanged).
+
   Every rectangle is in screen points, Electron's own space, as in boardPlace.ts.
 */
 
 import type { Box, Rect } from "./boardPlace";
 
-/* The web app's half of the board's place (src/lib/guide/boardWindow.ts there), word for word. */
+/* The web app's half of the board's place (src/lib/guide/boardWindow.ts there), word for word,
+   with `bounds` (boardPlaceMsg) added on this side first: a page that takes a place only with the
+   keys it knows drops one that carries it, so the web's half must take it too. */
 export type BoardWhere = "tab" | "float";
-export interface BoardPlace { where: BoardWhere; canMove: boolean; covering: boolean; app?: string }
+export interface BoardPlace { where: BoardWhere; canMove: boolean; covering: boolean; app?: string; bounds?: Rect }
 export interface BoardStateMsg { run: number; show: boolean; full: boolean; background?: string; drawn?: number }
 
 /** The Board tab's id in the tab bar: page ids start at 1 (windows.ts). */
@@ -61,15 +66,80 @@ function overlap(a: Box, b: Rect): number {
 /** Tutornote's window can take the board: open, on screen, and not signing in. */
 export const mainCanHold = (m: MainLook): boolean => m.open && m.shown && !m.minimized && !m.closing && !m.signIn && !!m.bounds;
 
-/** A window frame that fills its display's bounds (within 2 points each way): native full screen. */
+/** How far below its display's top macOS keeps a window in native full screen on a Mac with a
+ *  camera notch, in points: under the camera housing, the strip above it left black (the founder's
+ *  Kindle in full screen: at (0, 36), 1512 x 946 on a 1512 x 982 display, helpers/screen/main.swift's
+ *  selftest). Wide enough for the notch at the display's scaled sizes; a menu bar with no notch is
+ *  24 or 25 points, so a window zoomed under one never counts. */
+export const NOTCH_BAND = { min: 28, max: 50 } as const;
+
+/** A window frame that fills its display's bounds (within 2 points each way), or all of it below
+ *  a camera notch (NOTCH_BAND): native full screen. */
 export function fullScreenFrame(frame: Rect, display: Box): boolean {
   const near = (a: number, b: number): boolean => Math.abs(a - b) <= 2;
+  const top = frame.y - display.y;
   return (
     near(frame.x, display.x) &&
-    near(frame.y, display.y) &&
+    (near(top, 0) || (top >= NOTCH_BAND.min && top <= NOTCH_BAND.max)) &&
     near(frame.x + frame.w, display.x + display.width) &&
     near(frame.y + frame.h, display.y + display.height)
   );
+}
+
+/*
+  The lesson's own see-through window (screenTeach.ts ensureWindow) over the display that holds
+  most of the window read, chosen as each run starts. Over its work area, under the menu bar and
+  clear of the Dock, which macOS draws above it (the lesson's dock and chip never sit under them);
+  but over all of it when the window read is in native full screen (fullScreenFrame, below the
+  camera notch on a Mac with one): its page reaches both edges there, the menu bar and the Dock
+  hidden, and a work area would leave a strip
+  at its top and at its foot where nothing of the lesson could be drawn (a PDF or a Kindle book
+  read in full screen).
+  Every point the lesson's page holds is in that window's own points, so a window read that has
+  gone over another display, or into full screen or out of it, or whose display changed its bounds
+  (its resolution, or the displays rearranged), needs the run started afresh there (screenTeach.ts
+  rehome): displayChanged. Told by the display, its bounds and full screen, never by the work
+  area's size, which the Dock and the menu bar change.
+*/
+
+/** A display, as Electron gives it: its id, all of it, and the part the menu bar and the Dock leave. */
+export interface DisplayArea {
+  id: number;
+  bounds: Box;
+  workArea: Box;
+}
+
+/** Where a run put the lesson's window: over which display, and over all of it (`full`). */
+export interface OverlayHome {
+  displayId: number;
+  full: boolean;
+  /** The display's bounds as its run began: a resolution changed, or the displays rearranged,
+   *  changes them, and the lesson's window covers the wrong part of the screen then. */
+  bounds: Box;
+}
+
+/** The home of the lesson's window over a window read at `frame`, on `display` (above). */
+export const overlayHome = (display: Pick<DisplayArea, "id" | "bounds">, frame: Rect): OverlayHome => ({
+  displayId: display.id,
+  full: fullScreenFrame(frame, display.bounds),
+  bounds: { x: display.bounds.x, y: display.bounds.y, width: display.bounds.width, height: display.bounds.height },
+});
+
+/** What the lesson's window covers over a window read at `frame`, on `display` (above): all of the
+ *  display for a window in native full screen, else its work area. */
+export function overlayArea(display: Pick<DisplayArea, "bounds" | "workArea">, frame: Rect): Box {
+  const area = fullScreenFrame(frame, display.bounds) ? display.bounds : display.workArea;
+  return { x: area.x, y: area.y, width: area.width, height: area.height };
+}
+
+/** Whether the window read, now at `frame` on `display` (the one that holds most of it), wants the
+ *  lesson's window elsewhere than `home`, where its run put it: over another display, its window
+ *  gone into native full screen or out of it, or its display's bounds changed. */
+export function displayChanged(home: OverlayHome, display: Pick<DisplayArea, "id" | "bounds">, frame: Rect): boolean {
+  const now = overlayHome(display, frame);
+  const a = home.bounds;
+  const b = now.bounds;
+  return now.displayId !== home.displayId || now.full !== home.full || a.x !== b.x || a.y !== b.y || a.width !== b.width || a.height !== b.height;
 }
 
 /**
@@ -105,6 +175,40 @@ export function leavesTab(a: { main: MainLook; reading: Reading; otherOwnFocused
   if (a.otherOwnFocused || a.main.focused) return false;
   if (!mainCanHold(a.main)) return true;
   return coversReading(a.main, a.reading);
+}
+
+/*
+  What the page hears of its board (screen-teach:board-place). Where it is, whether it can be moved,
+  whether Tutornote's window is covering what is read, the app's name for "Back to", and, while the
+  board shows in a window of its own over the lesson window (the see-through one the page is in, on
+  the display of what is read), that window's frame in the lesson window's own points (`bounds`),
+  for the page to keep what it writes on the page being read (a margin note, an answer) clear of
+  it, as it keeps its writing clear of a board drawn inside its own window (the founder,
+  2026-10-28: the tutor over another app should "highlight things, create short notes"). None in
+  its tab, hidden, or on another display.
+*/
+
+/** The board's place for the page. `floating`: its own window's bounds while it shows there, else
+ *  null; `lesson`: the lesson window's bounds (the page's see-through window, not the window read), or
+ *  null with none. */
+export function boardPlaceMsg(a: {
+  where: BoardWhere;
+  canMove: boolean;
+  covering: boolean;
+  app: string;
+  floating: Box | null;
+  lesson: Box | null;
+}): BoardPlace {
+  const f = a.where === "float" ? a.floating : null;
+  const l = a.lesson;
+  const over = f && l && f.width > 0 && f.height > 0 && overlap(l, { x: f.x, y: f.y, w: f.width, h: f.height }) > 0;
+  return {
+    where: a.where,
+    canMove: a.canMove,
+    covering: a.covering,
+    ...(a.app ? { app: a.app } : {}),
+    ...(over ? { bounds: { x: f.x - l.x, y: f.y - l.y, w: f.width, h: f.height } } : {}),
+  };
 }
 
 /** The tabs in the bar's order: Home, the Board, then the notes. */

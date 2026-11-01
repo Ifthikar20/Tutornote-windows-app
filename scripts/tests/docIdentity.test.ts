@@ -12,8 +12,12 @@ import {
   docKeyOf,
   documentSized,
   firstBodyPoint,
+  frameMove,
+  identFrame,
   identVerdict,
   keyOf,
+  MOVE_LEAST,
+  MOVE_SAME_SIZE,
   SAME_LOOK_FOUND,
   SAME_LOOK_SHARE,
   sameDocument,
@@ -448,4 +452,62 @@ test("a switch left waiting goes where the student goes on to in the lesson's ap
   assert.equal(identVerdict(tab, ident({ title: "New Tab", top: 30, topTitle: "", topFrame: { x: 220, y: 90, w: 1000, h: 380 } })), null);
   const toApp = { ...LESSON, switching: { why: "app" as const, target: 77, waiting: "Deck.pdf" } };
   assert.equal(identVerdict(toApp, ident({ top: 300, topTitle: "Bravo slides", topFrame: third })), null);
+});
+
+/*
+  The lesson's window moved (frameMove): where the ident says it is now, against where the lesson
+  last had it.
+*/
+
+test("where the lesson's window is: its own frame, else topFrame while it is its app's front window", () => {
+  const moved = { x: 42, y: 69, w: 1800, h: 1125 };
+  assert.deepEqual(identFrame(ident({ frame: moved })), moved);
+  // (its app behind: no top, its own frame still says where it is: a Cmd drag)
+  assert.deepEqual(identFrame(ident({ frame: moved, top: null, topTitle: "", topFrame: null })), moved);
+  // (an older helper: topFrame, only while the window in front of its app is the lesson's own)
+  assert.deepEqual(identFrame(ident({ topFrame: moved })), moved);
+  assert.equal(identFrame(ident({ top: 300, topTitle: "Bravo slides", topFrame: moved })), null);
+  assert.equal(identFrame(ident({ top: null, topTitle: "", topFrame: null })), null);
+  assert.equal(identFrame(ident({ frame: null, top: null, topTitle: "", topFrame: null })), null);
+});
+
+test("a drag that keeps its size is a move by as much as the window went; a resize or no frame is none", () => {
+  // Dragged 40 points right and 25 down, by its title bar (its app in front) or from behind.
+  assert.deepEqual(frameMove(FRAME, ident({ topFrame: { ...FRAME, x: FRAME.x + 40, y: FRAME.y + 25 } })), { dx: 40, dy: 25 });
+  assert.deepEqual(frameMove(FRAME, ident({ frame: { ...FRAME, x: FRAME.x - 300, y: FRAME.y }, top: null, topTitle: "", topFrame: null })), {
+    dx: -300,
+    dy: 0,
+  });
+  // (its own frame goes before topFrame, which an older helper alone says)
+  assert.deepEqual(frameMove(FRAME, ident({ frame: { ...FRAME, y: FRAME.y + 10 }, topFrame: FRAME })), { dx: 0, dy: 10 });
+  // Not moved, or by less than a point's half: nothing.
+  assert.equal(frameMove(FRAME, ident()), null);
+  assert.equal(frameMove(FRAME, ident({ frame: { ...FRAME, x: FRAME.x + MOVE_LEAST } })), null);
+  // A resize is no move (the page is laid out afresh, and read again), even from its top left
+  // corner; a size within MOVE_SAME_SIZE is the same.
+  assert.equal(frameMove(FRAME, ident({ frame: { x: FRAME.x - 50, y: FRAME.y - 20, w: FRAME.w + 50, h: FRAME.h + 20 } })), null);
+  assert.equal(frameMove(FRAME, ident({ frame: { ...FRAME, w: FRAME.w - 200 } })), null);
+  assert.deepEqual(frameMove(FRAME, ident({ frame: { ...FRAME, x: FRAME.x + 5, w: FRAME.w + MOVE_SAME_SIZE } })), { dx: 5, dy: 0 });
+  // Another window in front of its app, with an older helper: nothing said of the lesson's.
+  assert.equal(frameMove(FRAME, ident({ top: 300, topTitle: "Bravo slides", topFrame: { ...FRAME, x: 500 } })), null);
+});
+
+test("moves said one after another add up to the whole drag, each from where the last left it", () => {
+  let at = FRAME;
+  let dx = 0;
+  let dy = 0;
+  for (const step of [
+    { x: 12, y: 3 },
+    { x: 30, y: 9 },
+    { x: 30, y: 9 },
+    { x: 55, y: -14 },
+  ]) {
+    const move = frameMove(at, ident({ frame: { ...FRAME, x: FRAME.x + step.x, y: FRAME.y + step.y } }));
+    if (!move) continue;
+    at = { ...at, x: at.x + move.dx, y: at.y + move.dy };
+    dx += move.dx;
+    dy += move.dy;
+  }
+  assert.deepEqual({ dx, dy }, { dx: 55, dy: -14 });
+  assert.deepEqual(at, { ...FRAME, x: FRAME.x + 55, y: FRAME.y - 14 });
 });

@@ -173,10 +173,13 @@ namespace Tutornote.Screen
                     Watcher.Companion(J.Bool(cmd, "on"), J.Nums(cmd, "stop"), J.Strs(cmd, "private"), J.Strs(cmd, "readers"));
                     break;
                 case "observe":
-                    Watcher.Observe(J.Nums(cmd, "windows"));
+                    Watcher.Observe(J.Nums(cmd, "windows"), J.Nums(cmd, "page"));
                     break;
                 case "front":
                     BringForward(new IntPtr((long)J.Num(cmd, "window", 0)));
+                    break;
+                case "noactivate":
+                    NoActivate(new IntPtr((long)J.Num(cmd, "window", 0)));
                     break;
                 case "chord":
                     // Control+Option has no Windows twin (Ctrl+Alt is AltGr on many keyboards): no chord yet.
@@ -188,6 +191,17 @@ namespace Tutornote.Screen
                     Out.Log("unknown command");
                     break;
             }
+        }
+
+        /**
+         * One of Tutornote's own windows takes clicks without coming to the front (screenTeach.ts
+         * stopTakingKeys, which says why Electron's own way will not do). Nobody else's window.
+         */
+        static void NoActivate(IntPtr h)
+        {
+            if (!Win32.IsWindow(h) || Win32.PidOf(h) != ParentPid) return;
+            long style = Win32.GetWindowLongPtr(h, Win32.GWL_EXSTYLE).ToInt64();
+            Win32.SetWindowLongPtr(h, Win32.GWL_EXSTYLE, new IntPtr(Win32.WithNoActivate(style)));
         }
 
         /**
@@ -265,10 +279,12 @@ namespace Tutornote.Screen
         /**
          * A read's answer, {"ev":"read"}: `app`, `bundle`, `title`, `window`, `pid`, `frame`, `lines`
          * (each with `t`, `c`, a box and its `words` with boxes), `captureMs`, `ocrMs`, `level`
-         * ("fast" for a glance, "accurate"), `ground`; and, on an accurate read only, `rules`: the
-         * lines the page draws for an answer (Rules.cs: solid, dotted or dashed; on a dark page its
-         * light ones too), [{x0, x1, y}], the line's ends and its middle, an empty list when there
-         * are none. A glance looks for none, and sends no `rules`. Every box and point in screen pixels.
+         * ("fast" for a glance, "accurate"), `ground`, `wordless` and `guessed` (0 here: the reader
+         * places every word it reads); and, on a read asked for accurately only, `paper` (none when
+         * it fills the window or cannot be told), `rules`: the lines the page draws for an answer
+         * (Rules.cs: solid, dotted or dashed; on a dark page its light ones too), thin rects, an empty
+         * list when there are none, `ink` (Geometry.cs) and `inkMs`. A glance measures none of them,
+         * even one read again in full. Every box and point in screen pixels.
          */
         public static Dictionary<string, object> ReadWindow(IntPtr h, bool fast)
         {
@@ -296,8 +312,19 @@ namespace Tutornote.Screen
             }
             long ocrMs = Clock.Ms - t1;
             double ground = Diff.Ground(look);
-            // (the page's answer lines, from the whole picture before it goes: never on a glance)
-            List<Rule> rules = level == "accurate" ? Rules.Of(pic, frame.Left, frame.Top, Win32.ScaleOf(h), lines, ground) : null;
+            // What else the page draws, from the whole picture before it goes: never a glance's, even
+            // one read again in full.
+            List<Rule> rules = null;
+            PageGeometry geometry = null;
+            long inkMs = 0;
+            if (!fast)
+            {
+                long t2 = Clock.Ms;
+                double windowScale = Win32.ScaleOf(h);
+                geometry = Geometry.Of(pic, frame.Left, frame.Top, windowScale, lines);
+                rules = Rules.Of(pic, frame.Left, frame.Top, windowScale, lines, ground).FindAll(r => Geometry.OnPaper(r, geometry));
+                inkMs = Clock.Ms - t2;
+            }
             var outLines = new List<object>();
             foreach (var l in lines)
             {
@@ -314,12 +341,15 @@ namespace Tutornote.Screen
                 { "ev", "read" }, { "app", app.Name }, { "bundle", app.Bundle }, { "title", title },
                 { "window", h.ToInt64() }, { "pid", (long)app.Pid }, { "frame", J.Frame(frame) }, { "lines", outLines },
                 { "captureMs", captureMs }, { "ocrMs", ocrMs }, { "level", level }, { "ground", ground },
+                { "wordless", 0 }, { "guessed", 0 },
             };
             if (rules != null)
             {
                 var outRules = new List<object>();
-                foreach (var r in rules) outRules.Add(new Dictionary<string, object> { { "x0", J.R(r.X0) }, { "x1", J.R(r.X1) }, { "y", J.R(r.Y) } });
+                foreach (var r in rules) outRules.Add(Geometry.RuleBox(r));
                 answer["rules"] = outRules;
+                if (geometry != null) Geometry.Fields(geometry, answer);
+                answer["inkMs"] = inkMs;
             }
             return answer;
         }
@@ -338,9 +368,17 @@ namespace Tutornote.Screen
 
         public static void Turn(Dictionary<string, object> cmd, long id)
         {
+            // (its keys are no student's: Watcher.KeyTurning; a wait for the student's own turn posts none)
+            var h = new IntPtr((long)J.Num(cmd, "window", 0));
+            bool keys = J.Str(cmd, "how") == "key";
+            if (keys) Watcher.KeyTurning(h, true);
             try { DoTurn(cmd, id); }
             catch (Exception e) { Out.Log("turn failed: " + e.GetType().Name); Out.Error(id, "capture_failed"); }
-            finally { lock (Cancelled) Cancelled.Remove(id); }
+            finally
+            {
+                if (keys) Watcher.KeyTurning(h, false);
+                lock (Cancelled) Cancelled.Remove(id);
+            }
         }
 
         static void DoTurn(Dictionary<string, object> cmd, long id)

@@ -1,6 +1,7 @@
 // What the helper says unasked: the window under the cursor ("over"), presses, releases and their
 // verdicts ("press", "release", "tap"), scrolls, which app is in front and which document the
-// watched window shows ("front", "ident"), and a new look on an observed window ("changed").
+// watched window shows and where it is ("front", "ident"), a new look on an observed window
+// ("changed"), and that a key went down in the watched window's app ("keyed": never which key).
 // The Mac helper's rules and numbers (main.swift), with the screen's grey thumbnails as its looks.
 using System;
 using System.Collections.Generic;
@@ -22,6 +23,10 @@ namespace Tutornote.Screen
         const double TAP_TRAVEL = 5, TAP_MAX_MS = 700;
         const double LINE_REACH = 14, SIDE_REACH = 160, TAP_REACH = 60, CARET_WIDE = 3;
         const int SEEN_KEPT = 64;
+        /** A key this fresh bursts the watched window (the Mac's KEY_FRESH_S), and one is said at most
+         *  this often while keys keep coming (KEY_RUN_S): the page trusts its ink again 700 ms after
+         *  the last it heard. */
+        const int KEY_FRESH_MS = 300, KEY_RUN_MS = 300;
 
         static readonly object Gate = new object();
 
@@ -49,6 +54,14 @@ namespace Tutornote.Screen
         static readonly Dictionary<long, long> quietUntil = new Dictionary<long, long>();
         /** When each window was last scrolled by the student (a scroll explains that window's new look only). */
         static readonly Dictionary<long, long> lastScrollAt = new Dictionary<long, long>();
+        /** The windows observed now that turn by the page ("observe"'s "page"). */
+        static HashSet<long> pagedObserved = new HashSet<long>();
+        /** A lesson's turns by a key going on, by window, and when the last of each ended: their keys
+         *  are no student's (KeyIsOurs). */
+        static readonly Dictionary<long, int> keyTurnsOn = new Dictionary<long, int>();
+        static readonly Dictionary<long, long> keyTurnEnded = new Dictionary<long, long>();
+        /** When the last key said ("keyed") went down, or -1: none yet. */
+        static long lastKeyTaken = -1;
 
         // Secure: Windows' own desktop (UAC, the lock screen) has the screen
         static bool secure;
@@ -99,7 +112,8 @@ namespace Tutornote.Screen
             }
         }
 
-        public static void Observe(List<double> ids)
+        /** Watch `ids` (two at most) for a new look; `page`: those of them that turn by the page. */
+        public static void Observe(List<double> ids, List<double> page)
         {
             lock (Gate)
             {
@@ -113,6 +127,21 @@ namespace Tutornote.Screen
                 }
                 observed.Clear();
                 observed.AddRange(keep);
+                pagedObserved = new HashSet<long>();
+                foreach (double d in page) if (keep.Exists(o => o.H == new IntPtr((long)d))) pagedObserved.Add((long)d);
+            }
+        }
+
+        /** A lesson's turn of `h` by a key begins (`on`) or ends. */
+        public static void KeyTurning(IntPtr h, bool on)
+        {
+            long key = h.ToInt64();
+            lock (Gate)
+            {
+                int now;
+                keyTurnsOn.TryGetValue(key, out now);
+                keyTurnsOn[key] = on ? now + 1 : Math.Max(0, now - 1);
+                if (!on) keyTurnEnded[key] = Clock.Ms;
             }
         }
 
@@ -180,6 +209,8 @@ namespace Tutornote.Screen
             if (now - secureAt >= 500) { secureAt = now; secure = Windows.SecureDesktop(); }
             if (doOver) CheckOver();
             if (doIdent) CheckIdent(watchNow);
+            // (a key just pressed in the lesson's app: its window is looked at in this tick)
+            if (looks.Count > 0 && watchNow != IntPtr.Zero) KeyTick(looks, watchNow, now);
             foreach (var o in looks) CheckObserved(o, now);
             // (each verdict on a worker of its own: its word check may wait for the text reader, and the
             // cursor, the front app and new looks keep their rhythm meanwhile)
@@ -258,6 +289,16 @@ namespace Tutornote.Screen
                 { "top", null }, { "topTitle", "" }, { "topFrame", null },
             };
             string sig = title + "|" + onScreen + "|" + secure;
+            // Where the watched window is, whichever app is in front: a window dragged by its title bar
+            // changes no pixel of it, so no new look is ever said for it, and the lesson's marks would
+            // stay where its words were. Said on every tick while it goes; screenTeach.ts followFrame
+            // moves the lesson with it. (Not once closed, nor minimized: no place on the screen.)
+            if (Win32.IsWindow(h) && !Win32.IsIconic(h))
+            {
+                RECT own = Win32.FrameOf(h);
+                msg["frame"] = J.Frame(own);
+                sig += "|at " + own.Left + "," + own.Top + "," + own.Width + "," + own.Height;
+            }
             if (fg != IntPtr.Zero)
             {
                 AppInfo app = Apps.OfWindow(fg);
@@ -286,7 +327,75 @@ namespace Tutornote.Screen
             Out.Send(msg);
         }
 
+        // ---- keys -----------------------------------------------------------------------------------
+
+        /*
+          A key pressed in the lesson's app (the founder, 2026-10-28: the tutor over another app should
+          be "super responsive"; the Mac's keyTick). A key sends no wheel, so a page turned or scrolled
+          by one (Page Down, an arrow, the space bar) was seen only at the window's next idle look, with
+          the lesson's ink left on where the words were meanwhile. Each tick asks when a key last went
+          down (Input.KeyAt: when, never which key), and one that went down less than KEY_FRESH_MS
+          before, with the watched window's app in front and that window observed, bursts it: its new
+          look is said as soon as it is still. The first key of a run is also said at once ("keyed": the
+          window alone), and one again at most every KEY_RUN_MS while keys keep coming. Never the keys
+          of a lesson's own turn by a key (KeyIsOurs).
+        */
+
+        /** Whether a key that went down `sinceKey` ms ago, with `front`'s app in front, bursts the watched
+         *  window, `window`'s: only one just pressed, and only in that window's own app. */
+        public static bool KeyBurstDue(long sinceKey, uint front, uint window)
+        {
+            return front != 0 && window != 0 && front == window && sinceKey >= 0 && sinceKey < KEY_FRESH_MS;
+        }
+
+        /** Whether the key that went down at `keyAt` is said, the last one said having gone down at
+         *  `lastKeyAt` (-1: none yet): the first of a run, and one at most every KEY_RUN_MS after it. */
+        public static bool KeyRunStarts(long keyAt, long lastKeyAt)
+        {
+            return lastKeyAt < 0 || keyAt - lastKeyAt > KEY_RUN_MS;
+        }
+
+        /** Whether a key at `keyAt` is one a lesson's own turn by a key posted: such a turn going on, or
+         *  one that ended at `turnEnded` (-1: none) or after it. */
+        public static bool KeyIsOurs(long keyAt, int turnsOn, long turnEnded)
+        {
+            return turnsOn > 0 || (turnEnded >= 0 && keyAt <= turnEnded);
+        }
+
+        static void KeyTick(List<Observed> looks, IntPtr watchNow, long now)
+        {
+            long keyAt;
+            if (!Input.KeyAt(out keyAt) || now - keyAt >= KEY_FRESH_MS) return;
+            if (!looks.Exists(o => o.H == watchNow)) return;
+            IntPtr fg = Win32.GetForegroundWindow();
+            IntPtr root = fg == IntPtr.Zero ? IntPtr.Zero : Win32.GetAncestor(fg, Win32.GA_ROOT);
+            uint front = root == IntPtr.Zero ? 0 : Apps.OfWindow(root).Pid;
+            uint windowPid;
+            lock (Gate) windowPid = watchedPid;
+            if (!KeyBurstDue(now - keyAt, front, windowPid)) return;
+            bool starts;
+            lock (Gate)
+            {
+                long key = watchNow.ToInt64(), ended;
+                int on;
+                keyTurnsOn.TryGetValue(key, out on);
+                if (!keyTurnEnded.TryGetValue(key, out ended)) ended = -1;
+                if (KeyIsOurs(keyAt, on, ended)) return;
+                starts = KeyRunStarts(keyAt, lastKeyTaken);
+                if (starts) lastKeyTaken = keyAt;
+            }
+            Burst(watchNow);
+            if (starts) Out.Send(new Dictionary<string, object> { { "ev", "keyed" }, { "window", watchNow.ToInt64() } });
+        }
+
         // ---- new looks ----------------------------------------------------------------------------
+
+        /** Whether a new look that began at `since` is the wheel scroll last heard at `scrolled` (-1:
+         *  none). Never in a window that turns by the page: a wheel or a swipe there turns a whole page. */
+        public static bool ScrollExplains(long since, long scrolled, bool page)
+        {
+            return !page && scrolled >= 0 && scrolled >= since - SCROLL_EXPLAINS_MS;
+        }
 
         static void CheckObserved(Observed o, long now)
         {
@@ -294,10 +403,12 @@ namespace Tutornote.Screen
             o.Next = now + (now < o.BurstUntil ? POLL_MS : OBSERVE_IDLE_MS);
             long key = o.H.ToInt64(), quiet, scrolledAt;
             Look baseLook;
+            bool paged;
             lock (Gate)
             {
                 if (!quietUntil.TryGetValue(key, out quiet)) quiet = 0;
-                if (!lastScrollAt.TryGetValue(key, out scrolledAt)) scrolledAt = -100000;
+                if (!lastScrollAt.TryGetValue(key, out scrolledAt)) scrolledAt = -1;
+                paged = pagedObserved.Contains(key);
                 if (!lastRead.TryGetValue(key, out baseLook)) baseLook = null;
             }
             if (quiet > now) { o.Prev = null; return; }
@@ -315,9 +426,9 @@ namespace Tutornote.Screen
                     if (news)
                     {
                         o.Said = t;
-                        // (a wheel scroll begun just before the change explains it: the app follows scrolls itself)
-                        bool scrolled = o.ChangeStart > 0 && scrolledAt >= o.ChangeStart - SCROLL_EXPLAINS_MS;
-                        if (!scrolled)
+                        // (a wheel scroll begun just before the change explains it: the app follows scrolls
+                        // itself; never a page turned by the wheel in a window that turns by the page)
+                        if (!(o.ChangeStart > 0 && ScrollExplains(o.ChangeStart, scrolledAt, paged)))
                             Out.Send(new Dictionary<string, object> { { "ev", "changed" }, { "window", o.H.ToInt64() }, { "settleMs", o.ChangeStart > 0 ? now - o.ChangeStart : 0 } });
                     }
                     o.ChangeStart = 0;
@@ -367,7 +478,11 @@ namespace Tutornote.Screen
                     && Math.Abs(p.Y - lastTapAt.Y) <= Win32.GetSystemMetrics(Win32.SM_CYDOUBLECLK),
             };
             lock (Gate) pr.Private = secure || PrivateApp(app, raw);
-            if (on) Out.Send(new Dictionary<string, object> { { "ev", "press" }, { "x", p.X }, { "y", p.Y }, { "window", h.ToInt64() } });
+            // (with the companion off, on the lesson's window alone: what it wrote there hides at once,
+            // ahead of the new look a click in a reader's margin may bring)
+            bool lessonWindow;
+            lock (Gate) lessonWindow = h == watched;
+            if (on || lessonWindow) Out.Send(new Dictionary<string, object> { { "ev", "press" }, { "x", p.X }, { "y", p.Y }, { "window", h.ToInt64() } });
             if (!pr.Private && !pr.Second)
             {
                 pr.Frame = Win32.FrameOf(h);
@@ -428,16 +543,31 @@ namespace Tutornote.Screen
             lock (Gate) { on = companion; w = watched; stopNow = stop; }
             Hit hit = Windows.At(p, null, Program.ParentPid, stopNow);
             if (hit.Window == IntPtr.Zero) return;
-            lock (Gate) lastScrollAt[hit.Window.ToInt64()] = Clock.Ms;
+            WheelStep step = Wheel(delta, horizontal, Win32.WheelPoints(Win32.FrameOf(hit.Window), Win32.ScaleOf(hit.Window)), Win32.WheelLines());
+            // (only a move up or down explains the new look it settles into: a pan sideways leaves it
+            // to be said, as a key's is)
+            if (step.Scrolls) lock (Gate) lastScrollAt[hit.Window.ToInt64()] = Clock.Ms;
             if (!on && hit.Window != w) return;
-            // A wheel notch (120) moves as many lines as Windows is set to (3 lines, about 100 points, by
-            // default; a page when set so); down the page is content moving up.
-            double amount = delta / 120.0 * Win32.WheelPoints(Win32.FrameOf(hit.Window), Win32.ScaleOf(hit.Window));
             Out.Send(new Dictionary<string, object>
             {
-                { "ev", "scroll" }, { "dy", horizontal ? 0 : -amount }, { "dx", horizontal ? amount : 0 }, { "momentum", false }, { "window", hit.Window.ToInt64() },
+                { "ev", "scroll" }, { "dy", step.Dy }, { "dx", step.Dx }, { "lines", step.Lines }, { "momentum", false }, { "window", hit.Window.ToInt64() },
             });
             lock (Gate) Burst(hit.Window);
+        }
+
+        /** What one wheel event says ("scroll"): the content moved up by Dy points and left by Dx;
+         *  Lines, the wheel's lines in Dy's sense, by which the page learns the app's own step; and
+         *  whether it is the window's scroll for the watch (Scrolls: a move up or down). */
+        public struct WheelStep { public double Dy, Dx, Lines; public bool Scrolls; }
+
+        /** A notch (120) moves `points` points, `lines` lines as Windows is set (a screen at a time, one);
+         *  down the page is content moving up, and tilting right is content moving left. */
+        public static WheelStep Wheel(int delta, bool horizontal, double points, double lines)
+        {
+            double notches = delta / 120.0;
+            double dy = horizontal || delta == 0 ? 0 : -notches * points;
+            double dx = !horizontal || delta == 0 ? 0 : notches * points;
+            return new WheelStep { Dy = dy, Dx = dx, Lines = horizontal || delta == 0 ? 0 : -notches * lines, Scrolls = dy != 0 };
         }
 
         /**

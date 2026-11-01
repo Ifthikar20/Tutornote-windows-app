@@ -37,8 +37,8 @@ using System.Text.RegularExpressions;
 
 namespace Tutornote.Screen
 {
-    /** An answer line: from x0 to x1 (x1 the first pixel past it), its middle at y. */
-    public sealed class Rule { public double X0, X1, Y; }
+    /** An answer line: from x0 to x1 (x1 the first pixel past it), its middle at y, H rows thick. */
+    public sealed class Rule { public double X0, X1, Y, H = 1; }
 
     public static class Rules
     {
@@ -46,8 +46,9 @@ namespace Tutornote.Screen
          *  exercise (4 times its size, or 8% of the page), so the page can be stricter, and longer
          *  than any letter's stroke at a reading size. */
         public const double MIN_RUN_PT = 36;
-        /** The most lines a read sends (the longest kept): a ruled grid is not a worksheet's lines. */
-        public const int MOST = 200;
+        /** The most lines a read sends (the longest kept, as many as the app takes: screenRead.ts
+         *  RULES_MOST): a ruled grid is not a worksheet's lines. */
+        public const int MOST = 64;
         /** writePlace.ts rulesIn's dark: luma (0.299, 0.587, 0.114) under 160, here in thousandths. */
         const int DARK_BELOW = 160000;
         /** The same the other way round, for a dark page's light lines: luma over 255 - 160. */
@@ -68,9 +69,22 @@ namespace Tutornote.Screen
         public static int MinRunAt(double scale) { return Math.Max(1, (int)Math.Floor(MIN_RUN_PT * scale + 0.5)); }
         public static int ThickAt(double scale) { return Math.Max(3, (int)Math.Floor(2.5 * scale + 0.5)); }
 
-        /** A band being followed down: its ends so far, its first and last rows, the run its row above
-         *  had (what this row's runs are matched with) and the runs it has in this row. */
-        sealed class Band { public int X0, X1, Top, Last, AboveX0, AboveX1, HereX0, HereX1; public bool Gone; }
+        /** A band being followed down: its ends so far, its first and last rows, the runs its row above
+         *  had (what this row's runs are matched with: a pair of numbers each, the grey either side of a
+         *  page being one band with two runs) and the runs it has in this row. */
+        sealed class Band
+        {
+            public int X0, X1, Top, Last;
+            public bool Gone;
+            public List<int> Above = new List<int>(), Here = new List<int>();
+
+            /** Whether a run from x0 to x1 lies under one of its runs of the row above. */
+            public bool Over(int x0, int x1)
+            {
+                for (int i = 0; i + 1 < Above.Count; i += 2) if (Above[i + 1] > x0 && Above[i] < x1) return true;
+                return false;
+            }
+        }
 
         /** Whether the pixel at byte `i` of a picture is ink: dark, or on a dark page (`light`) light. */
         static bool Ink(byte[] px, int i, bool light)
@@ -84,9 +98,9 @@ namespace Tutornote.Screen
          * `light`, a dark page's light lines. Four things differ from a canvas's, all for what a
          * window shows around its page and in it:
          *  - every long run of a row is followed down, not only its longest, and a band is the runs of
-         *    rows in a row that lie over one another: a row also crosses the app's own dark parts
-         *    (Chrome's grey around a PDF, a dark sidebar), which make tall bands of their own, so a
-         *    page's line beside them is still a line;
+         *    rows in a row that lie over one another, each run its own: a row also crosses the app's own
+         *    dark parts (Chrome's grey around a PDF, a dark sidebar), which make tall bands of their own,
+         *    so a page's line beside them, or between them, is still a line;
          *  - a window's picture is opaque: GDI leaves its alpha byte 0, so the alpha a canvas is tested
          *    by is not looked at;
          *  - a band is a line only on a ground unlike it (Apart), for a dark page's ground;
@@ -133,9 +147,9 @@ namespace Tutornote.Screen
                 foreach (Band b in open)
                     if (!b.Gone && b.Last == y - 1 && b.Last - b.Top + 1 <= thick
                         && Apart(px, w, h, b.Top - 1, b.X0, b.X1, light) && Apart(px, w, h, b.Last + 1, b.X0, b.X1, light))
-                        out_.Add(new Rule { X0 = b.X0, X1 = b.X1, Y = (b.Top + b.Last) / 2.0 });
+                        out_.Add(new Rule { X0 = b.X0, X1 = b.X1, Y = (b.Top + b.Last) / 2.0, H = b.Last - b.Top + 1 });
                 open.Clear();
-                foreach (Band b in next) { b.AboveX0 = b.HereX0; b.AboveX1 = b.HereX1; open.Add(b); }
+                foreach (Band b in next) { b.Above = b.Here; b.Here = new List<int>(); open.Add(b); }
                 bool[] was = above; above = here; here = was;
             }
             // (a dotted line where a solid one already is, an underscore leader's own, is that one)
@@ -171,26 +185,26 @@ namespace Tutornote.Screen
             Band joined = null;
             foreach (Band b in open)
             {
-                if (b.Gone || b.AboveX1 <= x0 || b.AboveX0 >= x1) continue;
+                if (b.Gone || !b.Over(x0, x1)) continue;
                 if (joined == null) { joined = b; continue; }
-                // (one more band above it: taken into the first, with its run above, so a later run
-                // of this row under that one goes on with the band too, and is no piece of its own)
+                // (one more band above it: taken into the first, with its runs above, so a later run
+                // of this row under one of those goes on with the band too, and is no piece of its own)
                 joined.Top = Math.Min(joined.Top, b.Top);
                 joined.X0 = Math.Min(joined.X0, b.X0);
                 joined.X1 = Math.Max(joined.X1, b.X1);
-                joined.AboveX0 = Math.Min(joined.AboveX0, b.AboveX0);
-                joined.AboveX1 = Math.Max(joined.AboveX1, b.AboveX1);
+                joined.Above.AddRange(b.Above);
                 if (b.Last == y)
                 {
-                    if (joined.Last == y) { joined.HereX0 = Math.Min(joined.HereX0, b.HereX0); joined.HereX1 = Math.Max(joined.HereX1, b.HereX1); }
-                    else { joined.HereX0 = b.HereX0; joined.HereX1 = b.HereX1; joined.Last = y; }
+                    if (joined.Last == y) joined.Here.AddRange(b.Here);
+                    else { joined.Here = b.Here; joined.Last = y; }
                 }
                 b.Gone = true;
                 next.Remove(b);
             }
-            if (joined == null) joined = new Band { Top = y, Last = y, X0 = x0, X1 = x1, HereX0 = x0, HereX1 = x1 };
-            else if (joined.Last == y) { joined.HereX0 = Math.Min(joined.HereX0, x0); joined.HereX1 = Math.Max(joined.HereX1, x1); }
-            else { joined.HereX0 = x0; joined.HereX1 = x1; joined.Last = y; }
+            if (joined == null) joined = new Band { Top = y, Last = y, X0 = x0, X1 = x1 };
+            else if (joined.Last != y) { joined.Here = new List<int>(); joined.Last = y; }
+            joined.Here.Add(x0);
+            joined.Here.Add(x1);
             joined.X0 = Math.Min(joined.X0, x0);
             joined.X1 = Math.Max(joined.X1, x1);
             if (!next.Contains(joined)) next.Add(joined);
@@ -234,7 +248,7 @@ namespace Tutornote.Screen
                 {
                     int length = last + 1 - x0;
                     if (x0 >= 0 && length >= minRun && pieces >= DOTTED_PIECES && ink * 100 >= DOTTED_INK_PERCENT * length)
-                        found.Add(new Rule { X0 = x0, X1 = last + 1, Y = (y + bottom - 1) / 2.0 });
+                        found.Add(new Rule { X0 = x0, X1 = last + 1, Y = (y + bottom - 1) / 2.0, H = Math.Max(1, bottom - y) });
                     x0 = -1;
                     continue;
                 }
@@ -306,7 +320,7 @@ namespace Tutornote.Screen
             if (ground < DARK_GROUND) all.AddRange(In(pic, minRun, thick, true));
             foreach (Rule r in all)
             {
-                var on = new Rule { X0 = left + r.X0, X1 = left + r.X1, Y = top + r.Y };
+                var on = new Rule { X0 = left + r.X0, X1 = left + r.X1, Y = top + r.Y, H = r.H };
                 if (!UnderWords(on, lines)) found.Add(on);
             }
             if (found.Count > MOST)

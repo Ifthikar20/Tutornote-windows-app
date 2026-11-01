@@ -1,6 +1,8 @@
 // The mouse, heard and never taken: Windows' Raw Input, delivered to a hidden message-only window
 // whatever app is in front (RIDEV_INPUTSINK). Every click and wheel still goes where it was going;
-// no hook sits in the input's way, and the keyboard is not listened to at all.
+// no hook sits in the input's way, and the keyboard is not listened to at all: that a key went down
+// is told from the time of the last input of any kind, which no mouse event explains (KeyAt), so
+// which key is never known here. The Mac's lastEventAt(.keyDown): when, never which key.
 using System;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -10,6 +12,35 @@ namespace Tutornote.Screen
     public static class Input
     {
         static WndProc proc; // (kept: the window calls it for the helper's whole life)
+
+        /** GetTickCount when the mouse last did anything (Raw Input hears every event of it). */
+        static int lastMouseTick;
+        /** The last input is a mouse's when it came this long or less before that mouse event was heard
+         *  (the two clocks tick every 16 ms or so); and it is judged only once this old, so a mouse
+         *  event still on its way to this window is not taken for a key. */
+        const uint MOUSE_SLACK_MS = 32;
+
+        /** Whether the last input, `inputTick`, is one no mouse event explains, the mouse's last being
+         *  `mouseTick`, `nowTick` being the time now (GetTickCount's, which wraps). A key, as a rule; a
+         *  touch screen's tap or a pen says the same, and a key is all that is said of it. */
+        public static bool NoMouseExplains(uint inputTick, uint mouseTick, uint nowTick)
+        {
+            uint age = unchecked(nowTick - inputTick);
+            if (age < MOUSE_SLACK_MS || age > 60000) return false;
+            return unchecked((int)(inputTick - mouseTick)) > (int)MOUSE_SLACK_MS;
+        }
+
+        /** When a key last went down, on Clock.Ms, if one did in the last minute. */
+        public static bool KeyAt(out long at)
+        {
+            at = 0;
+            uint input;
+            if (!Win32.LastInputTick(out input)) return false;
+            uint now = unchecked((uint)Environment.TickCount), mouse = unchecked((uint)Volatile.Read(ref lastMouseTick));
+            if (!NoMouseExplains(input, mouse, now)) return false;
+            at = Clock.Ms - unchecked(now - input);
+            return true;
+        }
 
         public static void Start()
         {
@@ -67,6 +98,7 @@ namespace Tutornote.Screen
                     int type = Marshal.ReadInt32(buffer, 0);
                     if (type == 0)
                     {
+                        Volatile.Write(ref lastMouseTick, Environment.TickCount);
                         ushort flags = (ushort)Marshal.ReadInt16(buffer, Header + 4);
                         short data = Marshal.ReadInt16(buffer, Header + 6);
                         uint extra = (uint)Marshal.ReadInt32(buffer, Header + 20);

@@ -145,7 +145,8 @@ const screenTeachBridge = Object.freeze({
   /** The student's taps on the page being read (the window lets them through; the helper hears them).
    *  With the companion on, `id` is the release the page heard first (onCompanionRelease). */
   onTap: (cb: unknown): (() => void) => listen("screen-teach:tap", cb),
-  /** The student scrolling the page being read, as it happens. */
+  /** The student scrolling the page being read, as it happens ({run, dy, dx, lines}: up and left
+   *  in points, and a mouse wheel's lines, 0 for a trackpad). */
   onScroll: (cb: unknown): (() => void) => listen("screen-teach:scroll", cb),
   /** Start the lesson afresh from a tap on words it has not read yet. */
   pickAt: (point: unknown): void => ipcRenderer.send("screen-teach:pick-at", point),
@@ -156,7 +157,8 @@ const screenTeachBridge = Object.freeze({
   /** That window's red light or ⌘W ("close") and green light ("zoom", "unzoom"). A channel of
    *  its own: a page older than it would take an unknown command for a key. */
   onBoardControl: (cb: unknown): (() => void) => listen("screen-teach:board-control", cb),
-  /** Where the board lives ({ where, canMove, covering, app? }), on every change. */
+  /** Where the board lives ({ where, canMove, covering, app?, bounds? }), on every change. `bounds`:
+   *  its own window's frame in this window's points, while it shows over this window. */
   onBoardPlace: (cb: unknown): (() => void) => listen("screen-teach:board-place", cb),
   /** The same, now (null with no board). Asking it tells the Mac app this page knows tabs. */
   boardPlace: (): Promise<unknown> => ipcRenderer.invoke("screen-teach:board-place-now"),
@@ -194,10 +196,17 @@ const screenTeachBridge = Object.freeze({
   /** That release was the app's after all ({id, why}: it acted, or a double click selected words):
    *  a card opened for it goes at once. */
   onCompanionWithdraw: (cb: unknown): (() => void) => listen("screen-teach:companion-withdraw", cb),
-  /** The student scrolled another app's window ({window, dy, dx}). */
+  /** The student scrolled another app's window ({window, dy, dx, lines}). */
   onWindowScroll: (cb: unknown): (() => void) => listen("screen-teach:window-scroll", cb),
   /** The lesson's window settled into a new look ({run, window}): a page the student turned. */
   onChanged: (cb: unknown): (() => void) => listen("screen-teach:changed", cb),
+  /** A key went down in the lesson's app, in front ({run}; never which key): the first of a run
+   *  of keys, then one at most every 0.3 s while they keep coming, before any new look they bring
+   *  is still. */
+  onKeyed: (cb: unknown): (() => void) => listen("screen-teach:keyed", cb),
+  /** The lesson's window was moved ({run, dx, dy}: points right and down since the last one said,
+   *  its size kept): its words are where they were in it, that much further on the screen. */
+  onMoved: (cb: unknown): (() => void) => listen("screen-teach:moved", cb),
   /** Another document where the lesson teaches ({run, on, why}): `on`, seen and being read (the
    *  lesson stops at once; `why`: "title", "window", "app" or "tap"); then a start with `switched`
    *  for it, or `on` false, the same document after all (`why`: "back", "same", "failed"), and the

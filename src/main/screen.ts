@@ -7,6 +7,8 @@ import path from "node:path";
 import readline from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { TAP_WORDS, type TapWords } from "./companionPlace";
+import { readOf } from "./screenRead";
+import { keyedOf, observeCommandOf, scrollOf } from "./screenWatch";
 
 /*
   The screen helper (helpers/screen/main.swift, built by scripts/build-screen-helper.sh):
@@ -47,6 +49,34 @@ export interface ScreenWord {
   y: number;
   w: number;
   h: number;
+  /** Guessed: Vision could not place it, so the helper placed it by its share of the line's
+   *  characters between its neighbours (main.swift wordBoxes). Left out for a word Vision placed. */
+  wg?: boolean;
+}
+
+/** A rectangle in the same screen points as a read's lines. */
+export interface ScreenRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * A coarse grid over the page's paper (over the window, with no paper), each cell set where the
+ * page draws something that is neither paper nor the read's words: a figure, a drawn box,
+ * handwriting. The words' own boxes, padded 2 points, are left out. `x`, `y`: its top left, in
+ * the read's points; `cell`: a cell's side in points (8); `cols` and `rows`: 400 at the most each.
+ * `bits`: the base64 of a row-major bitset, cell i = r * cols + c set when
+ * byte[i >> 3] & (1 << (i & 7)).
+ */
+export interface ScreenInk {
+  x: number;
+  y: number;
+  cell: number;
+  cols: number;
+  rows: number;
+  bits: string;
 }
 
 export interface ScreenLine {
@@ -62,19 +92,6 @@ export interface ScreenLine {
   /** Its words' boxes, when the helper sent them. */
   words?: ScreenWord[];
 }
-
-/** A line the page draws for an answer (the founder, 2026-10-27: "on the page where there is dash or
- *  line asking for a answer. some places asking for a answer can look like a long line breaker tab
- *  too"): from x0 to x1, its middle at y, in the same screen points as the lines (tutornote-web
- *  writePlace.ts AnswerLine). */
-export interface ScreenRule {
-  x0: number;
-  x1: number;
-  y: number;
-}
-
-/** The most answer lines a read keeps (the Windows helper sends no more). */
-const MAX_RULES = 200;
 
 export interface ScreenRead {
   app: string;
@@ -93,13 +110,32 @@ export interface ScreenRead {
   ground?: number;
   /** The pass that read it: "fast" (a glance) or "accurate". */
   level?: "fast" | "accurate";
-  /** The lines the page draws for an answer, found in an accurate read's picture (the Windows
-   *  helper's Rules.cs: the web's rulesIn, words' own underlines left out), top to bottom; [] when
-   *  there are none. Absent when none were looked for: a glance, or the Mac's helper. */
-  rules?: ScreenRule[];
   /** How long its words waited, once pictured, for a companion tap being judged (main.swift
    *  tapsJudged: Vision reads one picture at a time); only when it waited. */
   heldMs?: number;
+  /* The helper's own counts and times, for the app's log alone (screenRead.ts turnReadLine,
+     rereadLine): toLocal never sends them on to the page. Each left out by a helper older than it. */
+  /** How long the page's drawing (paper, rules, ink: below) took to measure, with an accurate read. */
+  inkMs?: number;
+  /** How many of its lines came with no word boxes at all, and how many words the helper placed
+   *  by their share of the line (ScreenWord.wg): counts only. */
+  wordless?: number;
+  guessed?: number;
+  /* What the helper measured of the page's drawing besides its words (main.swift "What else the
+     page draws"; the founder, 2026-10-28: the tutor over another app should write on the page as
+     on the web's own reader): numbers only, never its pixels, in the same points as the lines,
+     with an accurate read alone, never a glance (one asked for fast, even one the helper read again
+     accurately). Each left out where the helper could not tell, and by a helper older than it;
+     readOf and toLocal (screenRead.ts) keep each only where it is well formed. */
+  /** The page's paper: grown out from the box round its words while the bands stay the paper's
+   *  brightness (a PDF page inside Preview's grey, or Chrome's dark viewer). Left out when the
+   *  page fills the window (Kindle) or the helper could not tell. */
+  paper?: ScreenRect;
+  /** The lines drawn across the page outside its words (an answer's line, a blank's drawn
+   *  rule), each a thin rect, top to bottom: 64 at the most, [] for none found. */
+  rules?: ScreenRect[];
+  /** Where else the page is drawn on (ScreenInk). */
+  ink?: ScreenInk;
 }
 
 /** How a turn moves the window: a scroll of `dy` points at `at`, a key pressed `count` times, or nothing (the student turns it). */
@@ -184,26 +220,15 @@ const isBox = (v: unknown): v is Box => {
   return !!b && finiteNumber(b.x) && finiteNumber(b.y) && finiteNumber(b.w) && finiteNumber(b.h);
 };
 
-/** A read's answer lines as the helper sent them: each one finite numbers with x1 past x0, the first
- *  MAX_RULES of them; null when it sent none (none were looked for). */
-function rulesOf(value: unknown): ScreenRule[] | null {
-  if (!Array.isArray(value)) return null;
-  const rules: ScreenRule[] = [];
-  for (const v of value as unknown[]) {
-    const r = v as Record<string, unknown> | null;
-    if (!r || !finiteNumber(r.x0) || !finiteNumber(r.x1) || !finiteNumber(r.y) || !(r.x1 > r.x0)) continue;
-    rules.push({ x0: r.x0, x1: r.x1, y: r.y });
-    if (rules.length >= MAX_RULES) break;
-  }
-  return rules;
+/** Windows: an ink grid from physical pixels into the app's points: its corner, and its cell's side
+ *  by the scale of the display it is on (the helper's cell is whole pixels). Its bits stay. */
+function inkIn(ink: Record<string, unknown>): void {
+  if (!finiteNumber(ink.x) || !finiteNumber(ink.y) || !finiteNumber(ink.cell)) return;
+  const at = screen.screenToDipPoint({ x: ink.x, y: ink.y });
+  ink.x = at.x;
+  ink.y = at.y;
+  ink.cell = ink.cell / screen.getDisplayNearestPoint(at).scaleFactor;
 }
-
-/** Windows: an answer line from physical pixels into the app's points, as a line's box is (a pixel
- *  tall, on the display the box is nearest). */
-const ruleIn = (r: ScreenRule): ScreenRule => {
-  const b = boxIn({ x: r.x0, y: r.y, w: r.x1 - r.x0, h: 1 });
-  return { x0: b.x, x1: b.x + b.w, y: b.y };
-};
 
 /** Windows: a helper message's points and boxes, from physical pixels into the app's points. */
 function pixelsIn(msg: Record<string, unknown>): void {
@@ -222,8 +247,10 @@ function pixelsIn(msg: Record<string, unknown>): void {
       if (Array.isArray(words)) for (const word of words as Array<Record<string, unknown>>) if (isBox(word)) Object.assign(word, boxIn(word));
     }
   }
-  const rules = rulesOf(msg.rules);
-  if (rules) msg.rules = rules.map(ruleIn);
+  // (a page's drawing: readOf, screenRead.ts, keeps each only where it is well formed)
+  if (isBox(msg.paper)) msg.paper = boxIn(msg.paper);
+  if (Array.isArray(msg.rules)) msg.rules = (msg.rules as unknown[]).map((rule) => (isBox(rule) ? boxIn(rule) : rule));
+  if (typeof msg.ink === "object" && msg.ink !== null) inkIn(msg.ink as Record<string, unknown>);
 }
 
 /** Windows: a point the app names, into the helper's physical pixels. */
@@ -290,11 +317,14 @@ export interface ScreenRelease {
 }
 
 /** The student scrolled the watched window (with the companion on, the one under the cursor):
- *  its content moved up by `dy` points (down when negative) and left by `dx`. `momentum`: the
- *  glide after the fingers left the trackpad. Never the helper's own scrolls. */
+ *  its content moved up by `dy` points (down when negative) and left by `dx`. `lines`: a mouse
+ *  wheel's lines in dy's sense, each taken as 40 points in `dy` (main.swift wheelStep), so the page
+ *  can learn the app's own step; 0 for a trackpad's points, and from a helper older than it.
+ *  `momentum`: the glide after the fingers left the trackpad. Never the helper's own scrolls. */
 export interface ScreenScroll {
   dy: number;
   dx: number;
+  lines: number;
   momentum: boolean;
   window: number;
 }
@@ -312,7 +342,8 @@ export interface ScreenOver {
   secure: boolean;
 }
 
-/** With the companion on: the mouse button went down on an ordinary window (screen points). */
+/** With the companion on: the mouse button went down on an ordinary window (screen points); with
+ *  it off, on the watched window alone. */
 export interface ScreenPress {
   x: number;
   y: number;
@@ -325,6 +356,12 @@ export interface ScreenChanged {
   settleMs: number;
 }
 
+/** A key went down in the watched window's app, in front, that window observed: the first of a
+ *  run of keys (main.swift keyTick), never one a lesson's own turn posted. Never which key. */
+export interface ScreenKeyed {
+  window: number;
+}
+
 /** A window "ident" names: its id, and its title and frame (screen points). */
 export interface ScreenIdentWindow {
   window: number;
@@ -334,9 +371,11 @@ export interface ScreenIdentWindow {
 
 /**
  * Which document the watched window shows (main.swift "The lesson's window: which document"), as
- * the watch starts and whenever any of it changes: its `title` (kCGWindowName) and whether it is
- * on the screen; `top`, while its app is in front, that app's front ordinary window (another of
- * its windows when the student opened or picked one), with its title and frame; and `other`,
+ * the watch starts and whenever any of it changes: its `title` (kCGWindowName), whether it is on
+ * the screen and where it is (`frame`: said on every tick while it is dragged, its app in front or
+ * not; null once it is listed no more, and from a helper that does not say); `top`, while its app
+ * is in front, that app's front ordinary window (another of its windows when the student opened
+ * or picked one), with its title and frame; and `other`,
  * while another app is in front (never Tutornote, nothing under secure input), that app's front
  * ordinary window with its app; and `secure`, whether secure input is on (a password field has
  * the keys, somewhere: nothing is read for another document then; false from a helper that does
@@ -346,6 +385,7 @@ export interface ScreenIdent {
   window: number;
   title: string;
   onScreen: boolean;
+  frame: ScreenIdentWindow["frame"];
   top: number | null;
   topTitle: string;
   topFrame: ScreenIdentWindow["frame"];
@@ -383,8 +423,10 @@ export interface ScreenChordState {
  * ScreenScroll), "front" (the pid of the app that came to the front; once on watch, then on
  * each change) and "ident" (a ScreenIdent: which document the window shows, from a helper that
  * says it). With the companion on, also "over" (a ScreenOver), "press" (a ScreenPress),
- * "release" (a ScreenRelease, ahead of its tap), and taps and scrolls on any window; and
- * "changed" (a ScreenChanged) for the windows observed. While the talk chord is watched
+ * "release" (a ScreenRelease, ahead of its tap), and taps and scrolls on any window; with it off,
+ * "press" on the watched window alone (from a helper that says it); and
+ * "changed" (a ScreenChanged) for the windows observed, and "keyed" (a ScreenKeyed) for the
+ * watched one while it is observed. While the talk chord is watched
  * (chordWatch), "chord" (a ScreenChord) and "chordState" (a ScreenChordState).
  */
 export const watchEvents = new EventEmitter();
@@ -416,6 +458,7 @@ function identOf(msg: Record<string, unknown>): ScreenIdent | null {
     window: msg.window,
     title: typeof msg.title === "string" ? msg.title : "",
     onScreen: msg.onScreen === true,
+    frame: frameOf(msg.frame),
     top: finiteNumber(msg.top) ? msg.top : null,
     topTitle: typeof msg.topTitle === "string" ? msg.topTitle : "",
     topFrame: frameOf(msg.topFrame),
@@ -489,10 +532,8 @@ function onLine(line: string): void {
     return;
   }
   if (msg.ev === "scroll") {
-    if (finiteNumber(msg.dy) && typeof msg.window === "number") {
-      const dx = finiteNumber(msg.dx) ? msg.dx : 0;
-      watchEvents.emit("scroll", { dy: msg.dy, dx, momentum: msg.momentum === true, window: msg.window } satisfies ScreenScroll);
-    }
+    const scroll = scrollOf(msg);
+    if (scroll) watchEvents.emit("scroll", scroll);
     return;
   }
   if (msg.ev === "over") {
@@ -518,6 +559,11 @@ function onLine(line: string): void {
     if (typeof msg.window === "number") {
       watchEvents.emit("changed", { window: msg.window, settleMs: finiteNumber(msg.settleMs) ? msg.settleMs : 0 } satisfies ScreenChanged);
     }
+    return;
+  }
+  if (msg.ev === "keyed") {
+    const keyed = keyedOf(msg);
+    if (keyed) watchEvents.emit("keyed", keyed);
     return;
   }
   if (msg.ev === "ident") {
@@ -567,6 +613,10 @@ function onLine(line: string): void {
 */
 let companionAsk: { on: boolean; stop: number[]; private: string[]; readers: string[] } | null = null;
 let observeAsk: number[] = [];
+/** The observed windows that turn by the page (observePaged), sent with every "observe". */
+let pagedAsk: number[] = [];
+/** The window the helper keeps from coming to the front at a click (noActivateWindow). */
+let noActivateAsk: number | null = null;
 let watchAsk: number | null = null;
 let chordAsk = false;
 const RESPAWN_MS = 1_000;
@@ -623,9 +673,10 @@ function ensureHelper(): Helper | null {
   if (watchAsk !== null) child.stdin.write(`${JSON.stringify({ cmd: "watch", window: watchAsk })}\n`);
   if (companionAsk?.on) child.stdin.write(`${JSON.stringify({ cmd: "companion", ...companionAsk })}\n`);
   // (with the companion paused too: then the lesson's window alone, the companion told off)
-  if (observeAsk.length) child.stdin.write(`${JSON.stringify({ cmd: "observe", windows: observeAsk })}\n`);
+  if (observeAsk.length) child.stdin.write(`${JSON.stringify(observeCommand())}\n`);
   // (a helper older than the chord says "unknown command" to its log, and hears no chord)
   if (chordAsk) child.stdin.write(`${JSON.stringify({ cmd: "chord", on: true })}\n`);
+  if (noActivateAsk !== null) child.stdin.write(`${JSON.stringify({ cmd: "noactivate", window: noActivateAsk })}\n`);
   return child;
 }
 
@@ -726,28 +777,21 @@ export function restartScreenHelper(): void {
   }
 }
 
-/** A read as the helper answered it, its answer lines checked (rulesOf): one that sent none has none. */
-function readOf(answer: Record<string, unknown>): ScreenRead {
-  const rules = rulesOf(answer.rules);
-  if (rules) answer.rules = rules;
-  else delete answer.rules;
-  return answer as unknown as ScreenRead;
-}
-
 /** The text of the window on top at (x, y), skipping the windows of the processes in `exclude`. */
 export async function readWindowAt(x: number, y: number, exclude: number[]): Promise<ScreenRead> {
-  return readOf(await request({ cmd: "read", ...pixelsOut({ x, y }), exclude }, "read", READ_TIMEOUT_MS));
+  return readOf(await request({ cmd: "read", ...pixelsOut({ x, y }), exclude }, "read", READ_TIMEOUT_MS), false);
 }
 
 /**
  * The text of a window read before, as it is now (its id from that read). Fails with window_gone
  * once it has closed. `fast`: a glance (Vision's fast pass, a quarter of the time, boxes good for
  * paragraphs and lines), for the companion's hover band and a lesson's quick check after a scroll;
- * never the words a lesson teaches.
+ * never the words a lesson teaches, and never the page's drawing (readOf: not even when the
+ * helper read it again accurately).
  */
 export async function readWindow(window: number, opts?: { fast?: boolean }): Promise<ScreenRead> {
   const level = opts?.fast ? { level: "fast" } : {};
-  return readOf(await request({ cmd: "read", window, ...level }, "read", READ_TIMEOUT_MS));
+  return readOf(await request({ cmd: "read", window, ...level }, "read", READ_TIMEOUT_MS), opts?.fast === true);
 }
 
 /**
@@ -810,7 +854,33 @@ export function companionWatch(on: boolean, stop: number[], privateApps: readonl
  *  (screenTeach.ts), so a slide the student changes reaches every lesson. */
 export function observeWindows(ids: number[]): void {
   observeAsk = ids.slice(0, 2);
-  if (helper) command({ cmd: "observe", windows: observeAsk });
+  if (helper) command(observeCommand());
+}
+
+/**
+ * Of the windows observed, those that turn by the page (screenTeach.ts: the lesson's, in page
+ * mode), whoever asks for them to be observed (the companion included): a wheel or a swipe there
+ * turns a whole page, which the lesson does not follow from the scroll, so the helper says the
+ * page it turned ("changed") as it says one a key turned (main.swift scrollExplains). Kept, and
+ * sent with every "observe" from now on; [] for none.
+ */
+export function observePaged(ids: number[]): void {
+  const next = [...new Set(ids)].sort((a, b) => a - b);
+  if (next.join(",") === pagedAsk.join(",")) return;
+  pagedAsk = next;
+  if (helper && observeAsk.length) command(observeCommand());
+}
+
+/** Windows: `id`, a window of this app's, takes clicks without coming to the front (screenTeach.ts
+ *  stopTakingKeys). Asked again of a helper started afresh; null when none has to be. */
+export function noActivateWindow(id: number | null): void {
+  noActivateAsk = id;
+  if (id !== null) command({ cmd: "noactivate", window: id });
+}
+
+/** The "observe" command for what is asked now (screenWatch.ts observeCommandOf). */
+function observeCommand(): Record<string, unknown> {
+  return observeCommandOf(observeAsk, pagedAsk);
 }
 
 /**
