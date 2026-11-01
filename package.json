@@ -1,7 +1,7 @@
 {
   "name": "tutornote-windows",
   "productName": "Tutornote",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Tutornote for Windows: the web app in a window of its own.",
   "private": true,
   "author": "Tutornote",

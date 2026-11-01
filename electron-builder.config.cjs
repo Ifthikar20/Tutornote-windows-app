@@ -8,10 +8,10 @@
   TUTORNOTE_RELEASE_DIR): the repo lives in a synced folder, and OneDrive locking files
   mid-build breaks packaging, as iCloud does on the Mac.
 
-  Not signed yet, and no update feed yet: both wait on decisions (a signing account; where the
-  installer's updates are served from, since this repo is private). Until then Windows shows
-  "Windows protected your PC" on first run (More info, Run anyway), and updates are a new
-  installer run over the old one.
+  Not signed yet (the founder, 2026-11-01: the beta goes out unsigned, and a certificate comes
+  before it opens to everyone), so Windows shows "Windows protected your PC" on first run
+  (More info, Run anyway). Updates come from the site: latest.yml beside the installer goes up
+  with the web deploy's --windows-release, and the app reads it (src/main/updater.ts).
 */
 const path = require("node:path");
 
@@ -55,7 +55,7 @@ module.exports = {
   // tutornote:// is the sign-in link's scheme; anothernotes:// only until the web's /desktop/sign-in names it
   // everywhere (src/main/auth.ts LEGACY_PROTOCOL).
   protocols: { name: "Tutornote", schemes: ["tutornote", "anothernotes"] },
-  publish: null,
+  publish: { provider: "generic", url: "https://tutornote.ai/downloads/windows/" },
   win: {
     target: [{ target: "nsis", arch: ["x64"] }],
     icon: "build/icon.png",

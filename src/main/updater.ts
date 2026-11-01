@@ -2,24 +2,19 @@ import { app, dialog } from "electron";
 import { autoUpdater } from "electron-updater";
 
 /*
-  Updates come from the GitHub Releases feed electron-builder publishes (latest-mac.yml
-  next to the .dmg and .zip). The app checks on start and every few hours, downloads in
-  the background, and asks before restarting: a lesson in progress is never interrupted.
+  Updates come from the site: latest.yml beside the installer on tutornote.ai/downloads/windows/
+  (electron-builder.config.cjs publish). The app checks on start and every few hours, downloads
+  in the background, and asks before restarting: a lesson in progress is never interrupted.
 
-  macOS only updates a signed app; an unsigned development build logs the refusal and
-  carries on.
-
-  Windows has no feed yet: this repo's releases are private (reading them would need a token in
-  the app), and where the installer's updates are served from is still to be decided. Until then
-  the app checks nothing, and an update is the newer installer run over this one.
+  The installer isn't signed yet, so an update is held only to latest.yml's hash, from our own
+  site over https. Once a certificate is in, publisherName makes electron-updater check it too.
 */
 
 const CHECK_EVERY_MS = 4 * 60 * 60 * 1000;
-const NO_FEED = process.platform === "win32";
 let interactive = false;
 
 export function installUpdater(): void {
-  if (!app.isPackaged || NO_FEED) return;
+  if (!app.isPackaged) return;
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.on("error", (error) => {
@@ -66,16 +61,6 @@ export async function checkForUpdates(fromMenu: boolean): Promise<void> {
   if (!app.isPackaged) {
     if (fromMenu) {
       await dialog.showMessageBox({ type: "info", message: "Updates are only checked in the packaged app." });
-    }
-    return;
-  }
-  if (NO_FEED) {
-    if (fromMenu) {
-      await dialog.showMessageBox({
-        type: "info",
-        message: "Updates aren't automatic on Windows yet",
-        detail: "To update, run the newest Tutornote installer. Your notes are on your account, so nothing is lost.",
-      });
     }
     return;
   }
