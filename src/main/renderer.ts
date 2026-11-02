@@ -51,12 +51,14 @@ export function rendererBuild(): string {
  * analytics, so the policy blocks such a beacon rather than sending it.
  * No challenges.cloudflare.com (Turnstile): the bundle is built with Turnstile off
  * (build:off, no site key), so it never loads that script, and naming it would only widen
- * what could run in the app's origin (WHAT_TO_FIX.md WIN-07 / MAC-08).
+ * what could run in the app's origin (WHAT_TO_FIX.md WIN-07 / MAC-08). frame-src names
+ * youtube-nocookie.com, as the site's does: a lesson's lecture clip plays there once the student
+ * presses Play, and nothing of YouTube loads before (without it the player was a blank frame).
  */
 const CSP = [
   "default-src 'self'",
   "script-src 'self' 'wasm-unsafe-eval'",
-  "frame-src 'self'",
+  "frame-src 'self' https://www.youtube-nocookie.com",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' data: https://fonts.gstatic.com",
   "img-src 'self' data: blob:",
