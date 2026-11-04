@@ -65,6 +65,7 @@ import {
   accessibilityAllowed,
   bringWindowForward,
   chordWatch,
+  cursorStream,
   hideFromCapture,
   noActivateWindow,
   observePaged,
@@ -651,7 +652,27 @@ function applyMouse(): void {
   const ignore = !((interactive || overCard) && scrolling === 0);
   if (!w || ignore === ignoring) return;
   ignoring = ignore;
-  w.setIgnoreMouseEvents(ignore, { forward: true });
+  w.setIgnoreMouseEvents(ignore, { forward: FORWARD_MOVES });
+}
+
+/*
+  Windows: no forwarded mouse moves. Electron forwards them to a window that lets clicks through
+  with a low-level mouse hook on this process's own thread, and Windows makes every move of the
+  mouse, in every app, wait for that thread to take it: whenever this thread is busy (a read
+  coming in, a lesson's work), the student's own cursor stutters (the founder, 2026-11-03: "mouse
+  movement has to be very slick"). The screen helper says the cursor instead, from Raw Input, which
+  sits in nobody's way (screen.ts cursorStream), for as long as the window is shown, and the page
+  takes it as the Mac app's feed (onCursor). Over the page's own things (its dock, a card), the
+  window takes the mouse and has its own moves as any window does.
+*/
+const FORWARD_MOVES = process.platform !== "win32";
+
+/** The helper's cursor, said to the page while the window is shown (Windows: FORWARD_MOVES). */
+function cursorToPage(p: Point): void {
+  const w = live();
+  if (!w || !w.isVisible()) return;
+  const local = localPoint(p);
+  if (local) sendToPage("screen-teach:cursor", local);
 }
 
 /** The companion's card is up at `box` (screen points), or no longer (null): the cursor is read
@@ -1553,7 +1574,13 @@ function ensureWindow(bounds: Rectangle): BrowserWindow {
   // lesson would never show over a full-screen app.
   created.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   hideFromCapture(created);
-  created.setIgnoreMouseEvents(true, { forward: true });
+  created.setIgnoreMouseEvents(true, { forward: FORWARD_MOVES });
+  // (Windows: the helper's cursor while it is shown, in place of forwarded moves)
+  if (!FORWARD_MOVES) {
+    created.on("show", () => cursorStream(true));
+    created.on("hide", () => cursorStream(false));
+    created.on("closed", () => cursorStream(false));
+  }
   ignoring = true;
   interactive = false;
   pageReady = false;
@@ -3217,6 +3244,8 @@ export function installScreenTeach(): void {
   app.on("browser-window-focus", (_event, focused) => onOwnFocus(focused));
   // (before companion.ts's own listener: it asks pressWasThePage of the same press's tap)
   watchEvents.on("press", onPress);
+  // (Windows: the cursor, from the helper, while the window is shown: FORWARD_MOVES)
+  watchEvents.on("cursor", cursorToPage);
   // A display rearranged, its resolution changed, or unplugged: the lesson's window may be over
   // the wrong part of the screen now (homeAfterDisplays). A work area alone changing (the Dock, the
   // menu bar) moves nothing.

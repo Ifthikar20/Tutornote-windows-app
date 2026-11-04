@@ -284,6 +284,12 @@ const screenTeachBridge = Object.freeze({
   wantKeys: (on: unknown): void => ipcRenderer.send("screen-teach:want-keys", on === true),
   /** Where the page gets the cursor: its own mouse moves ("page"), or the Mac app's feed ("main"). */
   cursorFeed: (from: unknown): void => ipcRenderer.send("screen-teach:cursor-feed", from === "main" ? "main" : "page"),
+  /** Circle to explain: the mouse up after a drag, the companion on (with its stroke). */
+  onLift: (cb: unknown): (() => void) => listen("screen-teach:lift", cb),
+  /** A careful read of a circled window (null: none to be had). */
+  circleRead: (req: unknown): Promise<unknown> => ipcRenderer.invoke("screen-teach:circle-read", req),
+  /** A picture of a circled rectangle (null: none to be had). */
+  cropScreen: (req: unknown): Promise<unknown> => ipcRenderer.invoke("screen-teach:crop", req),
   /** The student's × in the page's dock with the companion on: the tutor turns off. */
   companionOff: (): void => ipcRenderer.send("screen-teach:companion-off"),
   /** The student paused the tutor from a dock (true) or played it on (false). */

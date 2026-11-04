@@ -1,5 +1,5 @@
 // The mouse, heard and never taken: Windows' Raw Input, delivered to a hidden message-only window
-// whatever app is in front (RIDEV_INPUTSINK). Every click and wheel still goes where it was going;
+// whatever app is in front (RIDEV_INPUTSINK). Every click, move and wheel still goes where it was going;
 // no hook sits in the input's way, and the keyboard is not listened to at all: that a key went down
 // is told from the time of the last input of any kind, which no mouse event explains (KeyAt), so
 // which key is never known here. The Mac's lastEventAt(.keyDown): when, never which key.
@@ -110,6 +110,8 @@ namespace Tutornote.Screen
                             // the primary click is the right one.
                             ushort down, up;
                             PrimaryFlags(Win32.ButtonsSwapped(), out down, out up);
+                            // (any mouse event may have moved it: the cursor fed to the app, a drag's stroke)
+                            Watcher.OnMove();
                             if ((flags & down) != 0) Watcher.OnLeftDown();
                             if ((flags & up) != 0) Watcher.OnLeftUp();
                             if (!ours && (flags & Win32.RI_MOUSE_WHEEL) != 0) Watcher.OnWheel(data, false);

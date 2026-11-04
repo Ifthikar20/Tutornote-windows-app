@@ -52,6 +52,21 @@ namespace Tutornote.Screen
             Picture half = Capture.Half(p);
             Check("halving averages each 2x2 block", half.W == 2 && half.H == 1 && half.Bgra[0] == 150);
 
+            // A drag's stroke (circle to explain)
+            var stroke = new List<POINT>();
+            stroke = Watcher.DragAdd(stroke, new POINT(10, 10));
+            stroke = Watcher.DragAdd(stroke, new POINT(11, 10));
+            Check("a stroke keeps no point within 2 px of the last", stroke.Count == 1);
+            for (int i = 1; i < 3000; i++) stroke = Watcher.DragAdd(stroke, new POINT(10 + i * 3, 10));
+            Check("a long stroke is thinned, never cut short", stroke.Count < 1024 && stroke[stroke.Count - 1].X == 10 + 2999 * 3 && stroke[0].X == 10);
+            List<int[]> lifted = Watcher.LiftPoints(stroke, 160);
+            Check("a lift says 160 points at the most, its first and last among them",
+                lifted.Count == 160 && lifted[0][0] == 10 && lifted[159][0] == 10 + 2999 * 3);
+            Check("a short stroke is said whole", Watcher.LiftPoints(new List<POINT> { new POINT(1, 2), new POINT(3, 4) }, 160).Count == 2);
+            string jpeg = Program.Jpeg(Flat2(40, 30), 82);
+            byte[] jb = Convert.FromBase64String(jpeg);
+            Check("a crop is a JPEG", jb.Length > 100 && jb[0] == 0xFF && jb[1] == 0xD8 && jb[2] == 0xFF);
+
             // Apps, said as the shared rules know them
             Check("chrome.exe is Chrome", Apps.BundleFor("chrome.exe") == "com.google.Chrome");
             Check("msedge.exe is Edge", Apps.BundleFor("msedge.exe") == "com.microsoft.edgemac");
@@ -626,6 +641,14 @@ namespace Tutornote.Screen
         {
             foreach (Rule r in rules) if (Math.Abs(r.Y - y) <= within) return r;
             return null;
+        }
+
+        /** A grey picture w x h, for the JPEG check. */
+        static Picture Flat2(int w, int h)
+        {
+            var pic = new Picture(w, h);
+            for (int i = 0; i < pic.Bgra.Length; i++) pic.Bgra[i] = 128;
+            return pic;
         }
 
         static Picture Draw(string text, int w, int h)

@@ -81,6 +81,24 @@ namespace Tutornote.Screen
         sealed class Pending { public long Due; public Press P; public POINT Up; public int Clicks; public long Id; public bool Companion; }
         static readonly List<Pending> pending = new List<Pending>();
 
+        // The cursor fed to the app ("cursor"), in place of a hook on the mouse: the app's overlay
+        // follows it by these, so nothing of Tutornote's ever sits in the way of the mouse itself (a
+        // low-level mouse hook makes every move wait for the app's busy thread: the founder,
+        // 2026-11-03, "mouse movement has to be very slick"). Each move Raw Input hears is said, one
+        // every CUR_EVERY_MS at the most, and the watch's tick says where it came to rest.
+        const int CUR_EVERY_MS = 6;
+        static volatile bool cursorOn;
+        static readonly object CurGate = new object();
+        static POINT curSent;
+        static bool curSentAny;
+        static long curSentAt;
+
+        // A drag's stroke (circle to explain: the page tells a ring from it), on the input thread
+        // alone: from the press to the release, a point every DRAG_STEP pixels, thinned past
+        // DRAG_MAX; said with the release ("lift") at LIFT_POINTS at the most.
+        const int DRAG_STEP = 2, DRAG_MAX = 1024, LIFT_POINTS = 160;
+        static List<POINT> drag;
+
         public static void Start()
         {
             var t = new Thread(Loop) { IsBackground = true, Name = "watch" };
@@ -110,6 +128,76 @@ namespace Tutornote.Screen
                 watchedTitle = h == IntPtr.Zero ? "" : Apps.TabTitle(Apps.OfWindow(h), Win32.TextOf(h));
                 frontPid = uint.MaxValue;
             }
+        }
+
+        /** The cursor said to the app ("cur") as it moves, or no longer. */
+        public static void Cursor(bool on)
+        {
+            lock (CurGate) curSentAny = false;
+            cursorOn = on;
+        }
+
+        /** Raw Input heard the mouse move (the input thread): a drag's stroke grows, and the cursor
+         *  is said where it is now (at most every CUR_EVERY_MS). */
+        public static void OnMove()
+        {
+            if (!cursorOn && drag == null) return;
+            POINT p;
+            if (!Win32.GetCursorPos(out p)) return;
+            if (drag != null && press != null) drag = DragAdd(drag, p);
+            if (cursorOn) SendCursor(p, false);
+        }
+
+        /** The cursor at `p` said, unless it was said there last, or (`resting` false: a move) a
+         *  move was said less than CUR_EVERY_MS ago. */
+        static void SendCursor(POINT p, bool resting)
+        {
+            long now = Clock.Ms;
+            lock (CurGate)
+            {
+                if (curSentAny && p.X == curSent.X && p.Y == curSent.Y) return;
+                if (!resting && curSentAny && now - curSentAt < CUR_EVERY_MS) return;
+                curSent = p;
+                curSentAny = true;
+                curSentAt = now;
+            }
+            Out.Send(new Dictionary<string, object> { { "ev", "cur" }, { "x", p.X }, { "y", p.Y } });
+        }
+
+        /** The stroke with `p` added, unless it is within DRAG_STEP of the last point; at DRAG_MAX,
+         *  every other point goes (the stroke is thinned, never cut short). */
+        public static List<POINT> DragAdd(List<POINT> stroke, POINT p)
+        {
+            if (stroke.Count > 0)
+            {
+                POINT last = stroke[stroke.Count - 1];
+                if (Math.Abs(p.X - last.X) < DRAG_STEP && Math.Abs(p.Y - last.Y) < DRAG_STEP) return stroke;
+            }
+            stroke.Add(p);
+            if (stroke.Count < DRAG_MAX) return stroke;
+            var thin = new List<POINT>(DRAG_MAX / 2 + 1);
+            for (int i = 0; i < stroke.Count; i += 2) thin.Add(stroke[i]);
+            if ((stroke.Count - 1) % 2 != 0) thin.Add(stroke[stroke.Count - 1]);
+            return thin;
+        }
+
+        /** The stroke as said with its release: `most` points at the most, evenly taken, its first
+         *  and last always among them; each [x, y]. */
+        public static List<int[]> LiftPoints(List<POINT> stroke, int most)
+        {
+            var out_ = new List<int[]>();
+            if (stroke == null || stroke.Count == 0 || most < 2) return out_;
+            if (stroke.Count <= most)
+            {
+                foreach (var p in stroke) out_.Add(new[] { p.X, p.Y });
+                return out_;
+            }
+            for (int i = 0; i < most; i++)
+            {
+                POINT p = stroke[(int)Math.Round(i * (stroke.Count - 1) / (double)(most - 1))];
+                out_.Add(new[] { p.X, p.Y });
+            }
+            return out_;
         }
 
         /** Watch `ids` (two at most) for a new look; `page`: those of them that turn by the page. */
@@ -207,6 +295,9 @@ namespace Tutornote.Screen
             }
             // (the screen's pictures and the window walks out of the lock: the mouse's thread takes it)
             if (now - secureAt >= 500) { secureAt = now; secure = Windows.SecureDesktop(); }
+            // (where the cursor came to rest, if the last move's was not said; and a cursor moved by
+            // touch or a pen, which Raw Input's mouse does not hear)
+            if (cursorOn) { POINT c; if (Win32.GetCursorPos(out c)) SendCursor(c, true); }
             if (doOver) CheckOver();
             if (doIdent) CheckIdent(watchNow);
             // (a key just pressed in the lesson's app: its window is looked at in this tick)
@@ -247,13 +338,15 @@ namespace Tutornote.Screen
                 AppInfo app = Apps.OfWindow(hit.Window);
                 string raw = Win32.TextOf(hit.Window);
                 RECT f = Win32.FrameOf(hit.Window);
-                // (its frame too: a window dragged to another place, same size, is said again there)
-                sig = hit.Window.ToInt64() + "|" + f.Left + "," + f.Top + "," + f.Width + "," + f.Height + "|" + (secure ? "s" : "");
+                // (its frame too: a window dragged to another place, same size, is said again there;
+                // and its title: another tab clicked in the same window is another document there)
+                string title = Apps.TabTitle(app, raw);
+                sig = hit.Window.ToInt64() + "|" + f.Left + "," + f.Top + "," + f.Width + "," + f.Height + "|" + (secure ? "s" : "") + "|" + title;
                 msg["window"] = hit.Window.ToInt64();
                 msg["pid"] = (long)app.Pid;
                 msg["app"] = app.Name;
                 msg["bundle"] = app.Bundle;
-                msg["title"] = Apps.TabTitle(app, raw);
+                msg["title"] = title;
                 msg["frame"] = J.Frame(f);
                 msg["own"] = false;
                 msg["secure"] = secure || PrivateApp(app, raw);
@@ -458,6 +551,7 @@ namespace Tutornote.Screen
         {
             POINT p;
             Win32.GetCursorPos(out p);
+            drag = null;
             bool on, watching;
             HashSet<long> stopNow;
             lock (Gate) { on = companion; watching = watched != IntPtr.Zero; stopNow = stop; }
@@ -493,6 +587,8 @@ namespace Tutornote.Screen
                 pr.Patch = pr.PatchPic == null ? null : Capture.Grey(pr.PatchPic);
             }
             press = pr;
+            // (with the companion on, the drag from here may be a ring round something to explain)
+            if (on) drag = new List<POINT> { p };
             lock (Gate) Burst(h);
         }
 
@@ -500,16 +596,32 @@ namespace Tutornote.Screen
         {
             Press pr = press;
             press = null;
+            List<POINT> stroke = drag;
+            drag = null;
             if (pr == null) return;
             POINT p;
             Win32.GetCursorPos(out p);
             long now = Clock.Ms;
-            double travel = TAP_TRAVEL * pr.Scale;
-            if (Math.Abs(p.X - pr.P.X) > travel || Math.Abs(p.Y - pr.P.Y) > travel || now - pr.At > TAP_MAX_MS) return;
-            int clicks = pr.Second ? lastClicks + 1 : 1;
-            lastTapUpAt = now; lastTapAt = p; lastClicks = clicks;
             bool on; IntPtr w;
             lock (Gate) { on = companion; w = watched; }
+            double travel = TAP_TRAVEL * pr.Scale;
+            if (Math.Abs(p.X - pr.P.X) > travel || Math.Abs(p.Y - pr.P.Y) > travel || now - pr.At > TAP_MAX_MS)
+            {
+                // No tap: a drag, or a long press. With the companion on it is said ("lift") with its
+                // stroke, and the page tells whether it is a ring; nothing is judged here.
+                if (on && stroke != null)
+                {
+                    stroke = DragAdd(stroke, p);
+                    Out.Send(new Dictionary<string, object>
+                    {
+                        { "ev", "lift" }, { "x", p.X }, { "y", p.Y }, { "window", pr.H.ToInt64() }, { "private", pr.Private },
+                        { "points", LiftPoints(stroke, LIFT_POINTS) },
+                    });
+                }
+                return;
+            }
+            int clicks = pr.Second ? lastClicks + 1 : 1;
+            lastTapUpAt = now; lastTapAt = p; lastClicks = clicks;
             if (on)
             {
                 long id = Program.StartUnixMs + Interlocked.Increment(ref tapCount);

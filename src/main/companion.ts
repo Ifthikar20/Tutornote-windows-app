@@ -26,6 +26,7 @@ import { appEvents } from "./events";
 import { ensureScreenReading, screenPanelWindow } from "./explain";
 import {
   companionWatch,
+  cropScreen,
   hideFromCapture,
   observeWindows,
   readWindow,
@@ -35,6 +36,7 @@ import {
   watchEvents,
   type ScreenChanged,
   type ScreenIdent,
+  type ScreenLift,
   type ScreenOver,
   type ScreenPress,
   type ScreenRead,
@@ -810,6 +812,19 @@ function onOver(over: ScreenOver): void {
   sendToPage("screen-teach:over", { window });
   refreshObserve();
   const kept = glances.get(window);
+  // Another tab clicked in the window, or another document opened there (the title changed in its
+  // letters: docIdentity.ts titleChange): its glance is the old one's words. The page hears it
+  // ("changed", run 0: a tap there waits for its own read, not the old words), and it is glanced at
+  // again now, never CHANGED_GLANCE_MS on (the founder, 2026-11-03: a tab clicked and the card did
+  // not come). Not the lesson's own window: screenTeach.ts follows that one.
+  if (kept && !kept.stale && over.title && kept.read.title && over.title !== kept.read.title && window !== screenTeachLesson()?.window) {
+    if (titleChange(kept.read.title, over.title, over.app) === "letters") {
+      kept.stale = true;
+      markReadStale(window);
+      sendToPage("screen-teach:changed", { run: 0, window });
+      console.log(`[companion] another document under the cursor in window ${window}: glanced at again`);
+    }
+  }
   // A window moved since its glance (dragged by its title bar, same size: no new look) is read
   // again where it is now, or a tap there would be judged against words that are no longer there.
   const was = kept?.read.frame;
@@ -1286,7 +1301,9 @@ function feedCursor(feed: boolean): void {
   cursorFeed = undefined;
   lastCursor = null;
   // (held too: by it the page knows when the cursor is over its dock, which then takes the click)
-  if (!feed || !on) return;
+  // (Windows: the helper says the cursor to the page all the while the window is shown, from Raw
+  // Input, at every move: screenTeach.ts FORWARD_MOVES. A timer here would only say it again, late.)
+  if (!feed || !on || process.platform === "win32") return;
   cursorFeed = setInterval(() => {
     const now = screen.getCursorScreenPoint();
     if (lastCursor && lastCursor.x === now.x && lastCursor.y === now.y) return;
@@ -1364,6 +1381,74 @@ async function explainAt(value: unknown): Promise<ExplainAnswer> {
   return { ok: true };
 }
 
+// MARK: circle to explain
+
+/*
+  The mouse came up after a drag that began on an ordinary window, the companion on (the helper's
+  "lift", with the drag's stroke): the page tells whether it was a ring round something to explain
+  (the web app's lib/screen/circle.ts) and draws it. Not a drag on the page's own things (its card,
+  its dock: the helper looks through them to the window below), nor while held. A private window's
+  says only that it is private: the page reads nothing there.
+*/
+function onLift(lift: ScreenLift): void {
+  if (!on || held || pressWasThePage() || overlayInteractive()) return;
+  const local = localPoint(lift);
+  if (!local) return;
+  const info = windowApps.get(lift.window);
+  const priv = lift.private || privateWindows.has(lift.window) || isPrivateApp(info?.bundle);
+  const points = lift.points.map((p) => localPoint(p)).filter((p): p is Point => p !== null);
+  sendToPage("screen-teach:lift", { window: lift.window, x: local.x, y: local.y, points, ...(priv ? { private: true } : {}) });
+}
+
+/** A careful read of a circled window (the page's circleRead), in the page's points, or null. It
+ *  is the window's pending read, so a lesson started there from the circle (explainAt) takes it. */
+async function circleRead(value: unknown): Promise<ScreenRead | null> {
+  const p = (value ?? {}) as Record<string, unknown>;
+  if (typeof p.window !== "number" || !on || held) return null;
+  const window = p.window;
+  if (privateWindows.has(window) || isPrivateApp(windowApps.get(window)?.bundle)) return null;
+  startCarefulRead(null, window);
+  const mine = pendingRead;
+  if (!mine) return null;
+  try {
+    const read = await mine.read;
+    if (!on || held || isPrivateApp(read.bundle)) return null;
+    console.log(`[companion] circle: read ${read.lines.length} lines`);
+    const local = localRead(read);
+    return local ? withoutDrawing(local) : null;
+  } catch (e) {
+    console.warn(`[companion] circle read failed: ${errorCode(e)}`);
+    return null;
+  }
+}
+
+/** A picture of a circled rectangle (the page's points) on `window`, for the page's cropScreen: the
+ *  screen as it shows there, Tutornote's own windows never in it. Null when the tutor is off or
+ *  held, the window is private, or it cannot be taken. Only inside the page's own window. */
+async function circleCrop(value: unknown): Promise<{ data: string; type: "image/jpeg"; w: number; h: number } | null> {
+  const p = (value ?? {}) as Record<string, unknown>;
+  const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+  if (typeof p.window !== "number" || !finite(p.x) || !finite(p.y) || !finite(p.w) || !finite(p.h) || !on || held) return null;
+  if (privateWindows.has(p.window) || isPrivateApp(windowApps.get(p.window)?.bundle)) return null;
+  const area = companionArea();
+  if (!area) return null;
+  const x = Math.max(0, p.x);
+  const y = Math.max(0, p.y);
+  const w = Math.min(area.width, p.x + p.w) - x;
+  const h = Math.min(area.height, p.y + p.h) - y;
+  if (w < 8 || h < 8) return null;
+  const at = screenPoint({ x, y });
+  if (!at) return null;
+  try {
+    const crop = await cropScreen({ x: at.x, y: at.y, w, h });
+    console.log(`[companion] circle: picture ${crop.w}x${crop.h}, ${Math.round((crop.data.length * 3) / 4 / 1024)} KB`);
+    return on && !held ? crop : null;
+  } catch (e) {
+    console.warn(`[companion] circle picture failed: ${errorCode(e)}`);
+    return null;
+  }
+}
+
 // MARK: install
 
 const fromBlob = (event: IpcMainEvent): boolean => {
@@ -1394,6 +1479,8 @@ export function installCompanion(): void {
   watchEvents.on("tap", onTap);
   watchEvents.on("scroll", onScroll);
   watchEvents.on("changed", onChanged);
+  // (a drag's end: circle to explain)
+  watchEvents.on("lift", onLift);
   // (another document in a window it knows, while a lesson watches one)
   watchEvents.on("ident", onIdent);
   appEvents.on("screen-teach-read", onLessonRead);
@@ -1489,6 +1576,15 @@ export function installCompanion(): void {
   // kept for the next tap on that window).
   ipcMain.on("screen-teach:card-closed", (event) => {
     if (fromScreenTeachPage(event) && pendingRead) pendingRead.id = null;
+  });
+  // Circle to explain: the circled window read carefully, and a picture of the ring's box.
+  ipcMain.handle("screen-teach:circle-read", (event, value: unknown): Promise<ScreenRead | null> => {
+    if (!fromScreenTeachPage(event)) throw new Error("not allowed");
+    return circleRead(value);
+  });
+  ipcMain.handle("screen-teach:crop", (event, value: unknown) => {
+    if (!fromScreenTeachPage(event)) throw new Error("not allowed");
+    return circleCrop(value);
   });
   ipcMain.on("screen-teach:cursor-feed", (event, from: unknown) => {
     if (!fromScreenTeachPage(event) || (from !== "main" && from !== "page")) return;

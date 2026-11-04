@@ -248,6 +248,14 @@ function pixelsIn(msg: Record<string, unknown>): void {
     }
   }
   // (a page's drawing: readOf, screenRead.ts, keeps each only where it is well formed)
+  // (a drag's stroke: [x, y] pairs)
+  if (Array.isArray(msg.points)) {
+    msg.points = (msg.points as unknown[]).flatMap((pt) => {
+      if (!Array.isArray(pt) || !finiteNumber(pt[0]) || !finiteNumber(pt[1])) return [];
+      const at = screen.screenToDipPoint({ x: pt[0], y: pt[1] });
+      return [[at.x, at.y]];
+    });
+  }
   if (isBox(msg.paper)) msg.paper = boxIn(msg.paper);
   if (Array.isArray(msg.rules)) msg.rules = (msg.rules as unknown[]).map((rule) => (isBox(rule) ? boxIn(rule) : rule));
   if (typeof msg.ink === "object" && msg.ink !== null) inkIn(msg.ink as Record<string, unknown>);
@@ -348,6 +356,24 @@ export interface ScreenPress {
   x: number;
   y: number;
   window: number;
+}
+
+/** With the companion on: the mouse came up after a drag (no tap) that began on an ordinary window,
+ *  where it came up and the stroke from the press (screen points, in order): circle to explain. */
+export interface ScreenLift {
+  x: number;
+  y: number;
+  window: number;
+  points: Array<{ x: number; y: number }>;
+  private: boolean;
+}
+
+/** A picture of part of the screen (cropScreen): a JPEG, base64, w x h pixels. */
+export interface ScreenCrop {
+  data: string;
+  type: "image/jpeg";
+  w: number;
+  h: number;
 }
 
 /** An observed window (observeWindows) settled into a new look: a page the student turned. */
@@ -555,6 +581,19 @@ function onLine(line: string): void {
     }
     return;
   }
+  if (msg.ev === "cur") {
+    if (finiteNumber(msg.x) && finiteNumber(msg.y)) watchEvents.emit("cursor", { x: msg.x, y: msg.y });
+    return;
+  }
+  if (msg.ev === "lift") {
+    if (finiteNumber(msg.x) && finiteNumber(msg.y) && typeof msg.window === "number") {
+      const points = Array.isArray(msg.points)
+        ? (msg.points as unknown[]).flatMap((pt) => (Array.isArray(pt) && finiteNumber(pt[0]) && finiteNumber(pt[1]) ? [{ x: pt[0], y: pt[1] }] : []))
+        : [];
+      watchEvents.emit("lift", { x: msg.x, y: msg.y, window: msg.window, points: points.slice(0, 512), private: msg.private === true } satisfies ScreenLift);
+    }
+    return;
+  }
   if (msg.ev === "changed") {
     if (typeof msg.window === "number") {
       watchEvents.emit("changed", { window: msg.window, settleMs: finiteNumber(msg.settleMs) ? msg.settleMs : 0 } satisfies ScreenChanged);
@@ -677,6 +716,7 @@ function ensureHelper(): Helper | null {
   // (a helper older than the chord says "unknown command" to its log, and hears no chord)
   if (chordAsk) child.stdin.write(`${JSON.stringify({ cmd: "chord", on: true })}\n`);
   if (noActivateAsk !== null) child.stdin.write(`${JSON.stringify({ cmd: "noactivate", window: noActivateAsk })}\n`);
+  if (cursorAsk) child.stdin.write(`${JSON.stringify({ cmd: "cursor", on: true })}\n`);
   return child;
 }
 
@@ -808,6 +848,32 @@ export async function turnWindow(turn: ScreenTurn, signal?: AbortSignal): Promis
     front: typeof answer.front === "boolean" ? answer.front : null,
     still: typeof answer.still === "boolean" ? answer.still : null,
   };
+}
+
+/**
+ * Windows: a picture of part of the screen (screen points), as it shows with Tutornote's own windows
+ * left out (setContentProtection): circle to explain's picture. Its longer side is 1024 pixels at
+ * the most. Fails with the helper's code (secure, bad_rect, capture_failed).
+ */
+export async function cropScreen(r: { x: number; y: number; w: number; h: number }): Promise<ScreenCrop> {
+  const a = pixelsOut({ x: r.x, y: r.y });
+  const b = pixelsOut({ x: r.x + r.w, y: r.y + r.h });
+  const answer = await request({ cmd: "crop", x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y }, "crop", READ_TIMEOUT_MS);
+  if (typeof answer.data !== "string" || !finiteNumber(answer.w) || !finiteNumber(answer.h)) throw new ScreenReadError("capture_failed");
+  return { data: answer.data, type: "image/jpeg", w: answer.w, h: answer.h };
+}
+
+/**
+ * Windows: the cursor said as it moves ("cursor" events, screen points) while `on`: the overlay
+ * follows the cursor by these instead of Electron's forwarded mouse moves, which hook the mouse on
+ * the app's own thread (every move of the mouse then waits on that thread). Asked again of a helper
+ * started afresh. Nothing on the Mac.
+ */
+let cursorAsk = false;
+export function cursorStream(on: boolean): void {
+  if (!PIXELS || cursorAsk === on) return;
+  cursorAsk = on;
+  if (on || helper) command({ cmd: "cursor", on });
 }
 
 /** Tell the student's taps on this window, and which app is in front (watchEvents), until unwatchWindow. */

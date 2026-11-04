@@ -181,6 +181,12 @@ namespace Tutornote.Screen
                 case "noactivate":
                     NoActivate(new IntPtr((long)J.Num(cmd, "window", 0)));
                     break;
+                case "cursor":
+                    Watcher.Cursor(J.Bool(cmd, "on"));
+                    break;
+                case "crop":
+                    ThreadPool.QueueUserWorkItem(delegate { Crop(cmd, id); });
+                    break;
                 case "chord":
                     // Control+Option has no Windows twin (Ctrl+Alt is AltGr on many keyboards): no chord yet.
                     if (J.Bool(cmd, "on"))
@@ -191,6 +197,62 @@ namespace Tutornote.Screen
                     Out.Log("unknown command");
                     break;
             }
+        }
+
+        /** A crop's longer side at the most, and its JPEG quality. */
+        const int CROP_MAX = 1024;
+        const long CROP_QUALITY = 82;
+
+        /**
+         * A picture of part of the screen for a circled picture (circle to explain): {x, y, w, h} in
+         * physical pixels, answered {id, ev: "crop", data (JPEG, base64), w, h, type}. From the screen
+         * as it shows, so Tutornote's own windows (the ring's ink, the tutor) are never in it
+         * (setContentProtection), scaled so its longer side is CROP_MAX at the most. Nothing while
+         * Windows' own secure desktop has the screen, nor for a rectangle of under 8 pixels a side.
+         */
+        static void Crop(Dictionary<string, object> cmd, long id)
+        {
+            try
+            {
+                int x = (int)Math.Round(J.Num(cmd, "x", 0)), y = (int)Math.Round(J.Num(cmd, "y", 0));
+                int w = (int)Math.Round(J.Num(cmd, "w", 0)), h = (int)Math.Round(J.Num(cmd, "h", 0));
+                if (w < 8 || h < 8 || w > 16384 || h > 16384) { Out.Error(id, "bad_rect"); return; }
+                if (Windows.SecureDesktop()) { Out.Error(id, "secure"); return; }
+                double k = Math.Min(1.0, CROP_MAX / (double)Math.Max(w, h));
+                int dw = Math.Max(1, (int)Math.Round(w * k)), dh = Math.Max(1, (int)Math.Round(h * k));
+                Picture pic = Capture.Screen(new RECT { Left = x, Top = y, Right = x + w, Bottom = y + h }, dw, dh);
+                if (pic == null) { Out.Error(id, "capture_failed"); return; }
+                Out.Send(new Dictionary<string, object>
+                {
+                    { "id", id }, { "ev", "crop" }, { "data", Jpeg(pic, CROP_QUALITY) }, { "w", dw }, { "h", dh }, { "type", "image/jpeg" },
+                });
+            }
+            catch (Exception e)
+            {
+                Out.Log("crop failed: " + e.GetType().Name);
+                Out.Error(id, "capture_failed");
+            }
+        }
+
+        /** A picture as a JPEG, base64. */
+        public static string Jpeg(Picture pic, long quality)
+        {
+            var handle = System.Runtime.InteropServices.GCHandle.Alloc(pic.Bgra, System.Runtime.InteropServices.GCHandleType.Pinned);
+            try
+            {
+                using (var bmp = new System.Drawing.Bitmap(pic.W, pic.H, pic.W * 4, System.Drawing.Imaging.PixelFormat.Format32bppRgb, handle.AddrOfPinnedObject()))
+                using (var ms = new MemoryStream())
+                {
+                    System.Drawing.Imaging.ImageCodecInfo jpeg = null;
+                    foreach (var c in System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders()) if (c.MimeType == "image/jpeg") jpeg = c;
+                    var ps = new System.Drawing.Imaging.EncoderParameters(1);
+                    ps.Param[0] = new System.Drawing.Imaging.EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
+                    if (jpeg != null) bmp.Save(ms, jpeg, ps);
+                    else bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
+                    return Convert.ToBase64String(ms.ToArray());
+                }
+            }
+            finally { handle.Free(); }
         }
 
         /**
