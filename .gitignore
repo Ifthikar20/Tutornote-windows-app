@@ -16,3 +16,6 @@ build/helpers/
 *.key
 *.cer
 *.mobileprovision
+# Tests are kept in Tutornote_test_suite (python sync.py copies them there); they still run
+# from here with npm test.
+/scripts/tests/

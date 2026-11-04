@@ -2,7 +2,8 @@
 
 # The Mac app's commit this Windows app was copied from. The files below are kept exactly as they
 # are at that commit: a change to one is made in the Mac repo first, then copied here, and the
-# commit above moves with it.
+# commit above moves with it. (The tests of these files are kept in Tutornote_test_suite,
+# windows-app/ and apple-desktop/.)
 src/main/apiTiming.ts
 src/main/boardHost.ts
 src/main/boardPlace.ts
@@ -13,12 +14,3 @@ src/main/screenRead.ts
 src/main/screenText.ts
 src/main/screenWatch.ts
 src/main/speechLog.ts
-scripts/tests/apiTiming.test.ts
-scripts/tests/boardHost.test.ts
-scripts/tests/boardPlace.test.ts
-scripts/tests/companionPlace.test.ts
-scripts/tests/docIdentity.test.ts
-scripts/tests/launchReveal.test.ts
-scripts/tests/screenRead.test.ts
-scripts/tests/screenWatch.test.ts
-scripts/tests/speechLog.test.ts
