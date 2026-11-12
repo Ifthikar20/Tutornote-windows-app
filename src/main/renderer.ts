@@ -1,9 +1,19 @@
-import { net, protocol } from "electron";
+import { net, protocol, session } from "electron";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { clock, TIMED, timeBody } from "./apiTiming";
-import { API_ORIGIN, APP_ORIGIN, APP_SCHEME, CLIENT_HEADER, PROXIED_PATHS, RENDERER_DIR, SITE_ORIGIN } from "./config";
+import {
+  API_ORIGIN,
+  APP_ORIGIN,
+  APP_SCHEME,
+  CLIENT_HEADER,
+  PROXIED_PATHS,
+  RENDERER_DIR,
+  SESSION_COOKIE,
+  SESSION_COOKIE_URL,
+  SITE_ORIGIN,
+} from "./config";
 import { appEvents } from "./events";
 import { serverRequest, type ServerResponse } from "./server";
 
@@ -145,13 +155,16 @@ async function forward(request: Request, url: URL): Promise<Response> {
   headers["x-anothernotes-client"] = CLIENT_HEADER;
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
   const body = hasBody ? new Uint8Array(await request.arrayBuffer()) : undefined;
+  // The desktop sign-in's exchange answers with a redirect whose cookie is the session: Chromium
+  // keeps it (server.ts jarCookies), since the redirect's Set-Cookie never reaches this code.
+  const handOff = request.method === "GET" && url.pathname === EXCHANGE_PATH;
   let response: ServerResponse;
   try {
     const target = `${API_ORIGIN}${url.pathname}${url.search}`;
     response =
       request.method === "POST" && url.pathname === REFRESH_PATH
         ? await refreshOnce(() => serverRequest(target, { method: request.method, headers, body }))
-        : await serverRequest(target, { method: request.method, headers, body });
+        : await serverRequest(target, { method: request.method, headers, body, jarCookies: handOff });
   } catch (e) {
     console.warn(`[api] ${request.method} ${url.pathname}: ${(e as Error).message}`);
     // No answer at all: fail the request the way Chromium does when offline (the page's fetch
@@ -160,6 +173,7 @@ async function forward(request: Request, url: URL): Promise<Response> {
     // writer's retry on reconnect. protocol.handle turns Response.error() into net::ERR_FAILED.
     return Response.error();
   }
+  if (handOff) appEvents.emit("sign-in-exchange", await exchangeOutcome(response));
   const picture = await followPicture(request.method, url.pathname, response);
   if (picture) return picture;
   console.log(`[api] ${clock()} ${request.method} ${url.pathname} -> ${response.status} ${Math.round(performance.now() - t0)} ms`);
@@ -249,6 +263,24 @@ async function followPicture(method: string, pathname: string, response: ServerR
   (the new access token lasts minutes; the pages share it anyway).
 */
 const REFRESH_PATH = "/api/auth/refresh";
+/** The desktop sign-in's exchange (auth.ts exchangeUrl; the API's identity/accounts/desktop.py). */
+const EXCHANGE_PATH = "/api/auth/desktop/exchange";
+
+/** For the sign-in log: what the exchange answered, the refusal's code when it refused (the
+ *  callback's #error=), and whether the session cookie is now in the app's jar. Never a code,
+ *  a state or the cookie's value. */
+async function exchangeOutcome(response: ServerResponse): Promise<{ status: number; refused: string | null; kept: boolean }> {
+  let refused: string | null = null;
+  try {
+    const fragment = new URL(response.headers.location ?? "").hash.replace(/^#/, "");
+    const error = new URLSearchParams(fragment).get("error");
+    refused = error && /^[a-z_]{1,40}$/.test(error) ? error : error ? "unknown" : null;
+  } catch {
+    /* no location: the status says enough */
+  }
+  const jar = await session.defaultSession.cookies.get({ url: SESSION_COOKIE_URL, name: SESSION_COOKIE }).catch(() => []);
+  return { status: response.status, refused, kept: jar.length > 0 };
+}
 const REUSE_REFRESH_MS = 5000;
 interface Buffered { status: number; statusText: string; headers: Record<string, string>; body: Uint8Array }
 let renewal: Promise<Buffered> | null = null;

@@ -1,7 +1,7 @@
 import { app, Menu, type MenuItemConstructorOptions } from "electron";
 import { beginBrowserSignIn } from "./auth";
 import { BOARD_COPY, clampBoardZoom } from "./boardHost";
-import { WEBSITE_URL } from "./config";
+import { APP_ORIGIN, originOf, SITE_ORIGIN, WEBSITE_URL } from "./config";
 import { appEvents } from "./events";
 import { openExternal } from "./links";
 import { microphoneAnswer, setMicrophoneAnswer } from "./microphone";
@@ -46,9 +46,24 @@ function goForward(): void {
   if (wc?.navigationHistory.canGoForward()) wc.navigationHistory.goForward();
 }
 
+/**
+ * The active tab's page, in the browser. A page of the bundle (app://anothernotes/dashboard) has
+ * no address a browser can open, so its path goes to the server the app talks to
+ * (app.tutornote.ai/dashboard); one of the app's own screens (sign-in, offline) opens the website.
+ */
+function browserUrlOf(url: string): string {
+  if (/^https?:/i.test(url)) return url;
+  try {
+    const u = new URL(url);
+    if (originOf(url) === APP_ORIGIN) return `${SITE_ORIGIN}${u.pathname}${u.search}`;
+  } catch {
+    /* no page yet: the website */
+  }
+  return WEBSITE_URL;
+}
+
 function openCurrentPageInBrowser(): void {
-  const url = contents()?.getURL() ?? "";
-  openExternal(/^https?:/i.test(url) ? url : WEBSITE_URL);
+  openExternal(browserUrlOf(contents()?.getURL() ?? ""));
 }
 
 /** The Window menu's board item says where the board is, and the File menu's microphone item the

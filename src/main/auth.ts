@@ -15,7 +15,7 @@ import { focusMainWindow, openAfterSignIn } from "./windows";
   through a link only it can use:
 
     1. beginBrowserSignIn: mint a `state` and a PKCE secret, open
-       https://tutornote.ai/desktop/sign-in?state&challenge&scheme in the system browser.
+       https://app.tutornote.ai/desktop/sign-in?state&challenge&scheme in the system browser.
     2. The browser signs in as usual and asks the API for a one-time code bound to the
        challenge, then opens tutornote://auth/callback?code&state (the scheme this app
        named: a page from before it knew the name opens the old anothernotes:// one).
