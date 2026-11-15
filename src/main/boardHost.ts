@@ -5,9 +5,12 @@
   (scripts/tests/boardHost.test.ts).
 
   The board is one page (the guest the lesson's page opened) that moves between two homes: the
-  floating window, and a tab of the main window. It goes into the tab when Tutornote's window is
-  there to hold it and lies clear of what is read; else it floats beside the words. A student who
-  chose Pop out keeps it floating until they choose Open in Tutornote.
+  floating window, and a tab of the main window. By default it is a window of its own (the founder,
+  2026-11-14: "the board should be another application"), which stays up when the student goes to
+  another app; only a student who chose Open in Tutornote has it go into the tab, when Tutornote's
+  window is there to hold it and lies clear of what is read (else it floats beside the words).
+  Whether that window stays above other apps' windows is the student's choice too (`onTop`, off by
+  default).
 
   And where the lesson's own see-through window goes, over the display of what is read
   (overlayArea), and when it must go elsewhere (displayChanged).
@@ -28,10 +31,12 @@ export interface BoardStateMsg { run: number; show: boolean; full: boolean; back
 export const BOARD_TAB_ID = -1;
 /** The share of the words' box Tutornote's window may lie over and still hold the board. */
 export const WORDS_COVER_MAX = 0.1;
-/** What the student chose: "window" after Pop out, "tab" after Open in Tutornote. */
+/** What the student chose: "window" (the default, and after Pop out), "tab" after Open in Tutornote. */
 export type BoardPref = "tab" | "window";
-/** What screen-board.json keeps besides the floating window's place: the choice, and the text size. */
-export interface BoardPrefs { place: BoardPref; zoom: number }
+/** What screen-board.json keeps besides the floating window's place: the choice, the text size,
+ *  and whether the board's own window stays above other apps' windows (`onTop`; boardPrefsOf
+ *  always gives it, false unless the student turned it on). */
+export interface BoardPrefs { place: BoardPref; zoom: number; onTop?: boolean }
 /** The board's text size (View > Zoom In, Zoom Out), in Chromium's zoom levels. */
 export const BOARD_ZOOM = { min: -3, max: 3, step: 0.5 } as const;
 
@@ -241,21 +246,23 @@ export function clampBoardZoom(level: number): number {
 
 const boardPrefOf = (v: unknown): BoardPref | null => (v === "tab" || v === "window" ? v : null);
 
-/** The student's choices from screen-board.json, or the defaults (the tab, actual size). */
+/** The student's choices from screen-board.json, or the defaults (a window of its own, actual
+ *  size, not kept on top). */
 export function boardPrefsOf(raw: unknown): BoardPrefs {
   const r = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
-  return { place: boardPrefOf(r.place) ?? "tab", zoom: finite(r.zoom) ? clampBoardZoom(r.zoom) : 0 };
+  return { place: boardPrefOf(r.place) ?? "window", zoom: finite(r.zoom) ? clampBoardZoom(r.zoom) : 0, onTop: r.onTop === true };
 }
 
-/** screen-board.json with `patch` applied: the floating window's place and size, the choice and the
- *  text size, each kept only when it is valid; nothing else. */
-export function boardFileWith(raw: unknown, patch: { bounds?: Box; place?: BoardPref; zoom?: number }): Record<string, unknown> {
+/** screen-board.json with `patch` applied: the floating window's place and size, the choice, the
+ *  text size and the keep-on-top choice, each kept only when it is valid; nothing else. */
+export function boardFileWith(raw: unknown, patch: { bounds?: Box; place?: BoardPref; zoom?: number; onTop?: boolean }): Record<string, unknown> {
   const r = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
   const out: Record<string, unknown> = {};
   for (const key of ["x", "y", "width", "height"] as const) if (finite(r[key])) out[key] = r[key];
   const place = boardPrefOf(r.place);
   if (place) out.place = place;
   if (finite(r.zoom)) out.zoom = clampBoardZoom(r.zoom);
+  if (typeof r.onTop === "boolean") out.onTop = r.onTop;
   if (patch.bounds) {
     out.x = patch.bounds.x;
     out.y = patch.bounds.y;
@@ -264,6 +271,7 @@ export function boardFileWith(raw: unknown, patch: { bounds?: Box; place?: Board
   }
   if (patch.place && boardPrefOf(patch.place)) out.place = patch.place;
   if (patch.zoom !== undefined && finite(patch.zoom)) out.zoom = clampBoardZoom(patch.zoom);
+  if (typeof patch.onTop === "boolean") out.onTop = patch.onTop;
   return out;
 }
 
@@ -275,6 +283,7 @@ export const BOARD_COPY = {
   popOut: "Pop Out Board",
   showIn: "Show Board in Tutornote",
   close: "Close Board",
+  onTop: "Keep Board on Top",
   copyPicture: "Copy Board as Picture",
   lookUp: (w: string) => `Look Up “${w}”`,
 } as const;

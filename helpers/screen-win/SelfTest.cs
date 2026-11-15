@@ -152,10 +152,262 @@ namespace Tutornote.Screen
 
             AnswerLines();
             WheelsAndKeys();
+            Motion();
             if (Ocr.Engine() != null) PageDrawing();
 
             Console.WriteLine(failed == 0 ? "all checks passed" : failed + " checks failed");
             return failed == 0 ? 0 : 1;
+        }
+
+        // ---- following a window that moves: the stamp rule, zoom, settling, the shift tracker's
+        // match, the tap hold, selection drags and glances ------------------------------------------
+        static void Motion()
+        {
+            // Which wheels stamp a window as scrolled, and which are a zoom
+            Check("a scroll said to main stamps its window", Watcher.StampsScroll(true, true));
+            Check("one never said to main stamps nothing (it explains no new look)", !Watcher.StampsScroll(true, false));
+            Check("nor does a pan sideways", !Watcher.StampsScroll(false, true));
+            Check("Ctrl on a notch is a zoom", Watcher.WheelZooms(true, false, 120) && Watcher.WheelZooms(true, false, -120));
+            Check("a notch without Ctrl is a scroll", !Watcher.WheelZooms(false, false, 120));
+            Check("Ctrl on a sideways wheel, or a wheel that moved nothing, is no zoom", !Watcher.WheelZooms(true, true, 120) && !Watcher.WheelZooms(true, false, 0));
+            Check("a careful read's look is kept while the window moves", Watcher.KeepsLook(true, true));
+            Check("a glance's is not while it moves", !Watcher.KeepsLook(false, true));
+            Check("but is once it holds still", Watcher.KeepsLook(false, false));
+
+            // Settling
+            var s = new Settle();
+            s.Input(0);
+            Check("a wheel begins a motion", s.Moving);
+            Check("a look still moving does not settle", s.Frame(30, 5) < 0 && s.Frame(130, 5) < 0);
+            Check("nor one still less than QUIET_MS after the last move", s.Frame(200, 0.1) < 0);
+            long ms = s.Frame(240, 0.1);
+            Check("it settles once still QUIET_MS after the last move, said from its start", ms == 240 && !s.Moving);
+            s = new Settle();
+            s.Input(0);
+            Check("a wheel that moved nothing waits UNMOVED_MS", s.Frame(100, 0.1) < 0 && s.Frame(200, 0.1) < 0);
+            Check("and then settles", s.Frame(260, 0.1) == 260);
+            s = new Settle();
+            Check("a faint flicker with no wheel begins no motion", s.Frame(100, 1.0) < 0 && !s.Moving);
+            Check("a look that changed with no wheel does", s.Frame(500, 3) < 0 && s.Moving);
+            Check("and settles at the next still look", s.Frame(1000, 0.1) == 500);
+            s = new Settle();
+            s.Input(0);
+            s.Frame(50, 5);
+            s.Input(120);
+            Check("another wheel while it moves holds it moving", s.Frame(180, 0.1) < 0 && s.Frame(230, 0.1) == 230);
+            s = new Settle();
+            s.Input(0);
+            Check("it moves now until MAX_MS after its last move", s.MovingNow(2900) && !s.MovingNow(3100));
+            Check("nothing settles that never moved", new Settle().Frame(100, 0.1) < 0);
+            Check("a creep under a fifth of a grey level a frame is held, not measured", Tracker.Still(0.15) && !Tracker.Still(0.25));
+            Check("a measured move feeds the settle test as a move", Tracker.SettleStep(0.1, true) >= Diff.SETTLED_BELOW && Tracker.SettleStep(0.1, false) == 0.1);
+            var creep = new Settle();
+            creep.Input(0);
+            creep.Frame(30, Tracker.SettleStep(0.1, true));
+            Check("so a slow creep does not settle while it is measured moving", creep.Frame(100, Tracker.SettleStep(0.1, true)) < 0 && creep.Frame(160, 0.05) < 0 && creep.Frame(210, 0.05) == 210);
+            Check("a motion is measured from a standing picture taken before it, not long before",
+                Tracker.RefFits(1000, 1500, true) && !Tracker.RefFits(1600, 1500, true) && !Tracker.RefFits(1000, 1000 + Tracker.REF_MAX_MS, true) && !Tracker.RefFits(1000, 1500, false));
+
+            // The shift tracker's match: profiles
+            var rnd = new Random(7);
+            var smooth = new double[600];
+            double v = 0;
+            for (int i = 0; i < smooth.Length; i++) { v = 0.8 * v + rnd.NextDouble() * 200 - 100; smooth[i] = v; }
+            var at = new double[500];
+            var moved = new double[500];
+            for (int i = 0; i < 500; i++) { at[i] = smooth[i + 40]; moved[i] = Lerp(smooth, i + 40 + 10.5); }
+            double score;
+            int lag = Shift.BestLag(at, moved, 300, 125, out score);
+            double sub = Shift.Parabola(Shift.Ncc(at, moved, lag - 1, 125), score, Shift.Ncc(at, moved, lag + 1, 125));
+            Check("a profile moved 10.5 rows is found 10.5 rows on (" + (lag + sub).ToString("0.00") + ")", Math.Abs(lag + sub - 10.5) < 0.3 && score > 0.95);
+            Check("a flat profile correlates with nothing", Shift.Ncc(new double[100], at, 0, 16) == -2);
+            Check("a parabola's peak is where it is, within half a step", Math.Abs(Shift.Parabola(0.8, 1, 0.6) + 0.1667) < 0.01 && Math.Abs(Shift.Parabola(0.6, 1, 0.8) - 0.1667) < 0.01 && Shift.Parabola(1, 1, 1) == 0);
+            int best;
+            Check("strips vote, and the lag most agree on wins", Shift.Vote(new List<int> { 30, 31, 30, 0, 29, 0 }, out best) == 4 && Math.Abs(best - 30) <= 1);
+
+            // The shift tracker's match: pictures of a page of made up lines
+            Look doc = Page(rnd, 640, 1400, 1);
+            Look prev = Rows(doc, 100, 500), cur = Rows(doc, 137, 500);
+            ShiftMatch m = Shift.Measure(prev, cur);
+            Check("a page scrolled 37 points down is said moved 37 up (" + Said(m) + ")", m.Ok && Math.Abs(m.Dy - 37) < 0.3 && Math.Abs(m.Dx) < 0.3);
+            m = Shift.Measure(Rows(doc, 300, 500), Rows(doc, 280, 500));
+            Check("scrolled back up 20, it is said moved 20 down (" + Said(m) + ")", m.Ok && Math.Abs(m.Dy + 20) < 0.3);
+            m = Shift.Measure(prev, Rows(doc, 100, 500));
+            Check("a page that held still moved 0", m.Ok && Math.Abs(m.Dy) < 0.3 && Math.Abs(m.Dx) < 0.3);
+            m = Shift.Measure(Rows(doc, 100, 500), Rows(doc, 100 + 330, 500));
+            Check("a jump of most of the window is still found (" + Said(m) + ")", m.Ok && Math.Abs(m.Dy - 330) < 0.3);
+            Look tall = Page(new Random(11), 640, 4 * 900, 4);
+            m = Shift.Measure(Down(tall, 4, 0, 500), Down(tall, 4, 4 * 12 + 2, 500));
+            Check("a move below a pixel is found (12.5: " + Said(m) + ")", m.Ok && Math.Abs(m.Dy - 12.5) < 0.3);
+            Look side = Rows(doc, 137, 500);
+            for (int y = 0; y < side.H; y++) for (int x = 0; x < side.W / Shift.STRIPS; x++) side.G[y * side.W + x] = prev.G[y * prev.W + x];
+            m = Shift.Measure(prev, side);
+            Check("a sidebar that stays where it is is outvoted (" + Said(m) + ")", m.Ok && Math.Abs(m.Dy - 37) < 0.3);
+            m = Shift.Measure(prev, Cols(Rows(doc, 137, 500), 6));
+            Check("a page moved 6 points left too is said so (" + Said(m) + ")", m.Ok && Math.Abs(m.Dy - 37) < 0.3 && Math.Abs(m.Dx - 6) < 0.5);
+            m = Shift.Measure(Flat(640, 500, 255), Flat(640, 500, 255));
+            Check("a blank page is too flat to match: nothing is said", !m.Ok && m.Why == "flat");
+            m = Shift.Measure(prev, Rows(Page(new Random(99), 640, 1400, 1), 100, 500));
+            Check("another page altogether is no shift: nothing is said (" + m.Why + ")", !m.Ok);
+            Look half = Rows(doc, 137, 500);
+            Look other = Rows(Page(new Random(5), 640, 1400, 1), 0, 500);
+            for (int i = half.G.Length / 2; i < half.G.Length; i++) half.G[i] = other.G[i];
+            m = Shift.Measure(prev, half);
+            Check("a page half of which changed is no shift either (" + m.Why + ")", !m.Ok);
+            // (each strip mirrored: every strip's row profile is the same, its pixels are not)
+            Look mirrored = Rows(doc, 137, 500);
+            int sw = mirrored.W / Shift.STRIPS;
+            for (int y = 0; y < mirrored.H; y++)
+                for (int k = 0; k < Shift.STRIPS; k++)
+                    for (int x = 0; x < sw / 2; x++)
+                    {
+                        int i = y * mirrored.W + k * sw + x, j = y * mirrored.W + k * sw + sw - 1 - x;
+                        byte t = mirrored.G[i]; mirrored.G[i] = mirrored.G[j]; mirrored.G[j] = t;
+                    }
+            m = Shift.Measure(prev, mirrored);
+            Check("words whose rows match but whose pixels do not are no shift (" + m.Why + ")", !m.Ok && m.Why == "changed");
+            // (lines all alike: a wrong line's lag must be refused, never said)
+            Look even = Flat(640, 1400, 255);
+            var er = new Random(21);
+            for (int y = 10; y + 14 < even.H; y += 22)
+                for (int x = 30; x < 610; x++)
+                    if (er.Next(3) != 0) for (int r = y + er.Next(3); r < y + 12 - er.Next(3); r++) even.G[r * 640 + x] = 30;
+            m = Shift.Measure(Rows(even, 100, 500), Rows(even, 151, 500));
+            Check("on lines all alike the shift is right or refused, never another line's (" + Said(m) + ")", !m.Ok || Math.Abs(m.Dy - 51) < 0.3);
+            Look wide = Page(new Random(3), 1200, 1400, 1);
+            long t0 = Clock.Ms;
+            for (int i = 0; i < 5; i++) Shift.Measure(Rows(wide, 100, 530), Rows(wide, 100 + 9 * i, 530));
+            long each = (Clock.Ms - t0) / 5;
+            Check("a window's match takes little (" + each + " ms on 1200 x 530)", each < 40);
+
+            // The tap hold (the Mac's holdSelfTest)
+            Check("a read's words do not wait with no tap being judged", Watcher.TapsJudged(Watcher.TAP_HOLD_MS) < 10);
+            Watcher.Judging(1, 1);
+            var verdict = new System.Threading.Thread(delegate () { System.Threading.Thread.Sleep(80); Watcher.Judged(1, 1); });
+            verdict.Start();
+            long waited = Watcher.TapsJudged(Watcher.TAP_HOLD_MS);
+            verdict.Join();
+            Check("they wait for a tap being judged until its verdict (" + waited + " ms)", waited >= 70 && waited < Watcher.TAP_HOLD_MS);
+            Watcher.Judging(1, 2);
+            Watcher.Judged(1, 1);
+            waited = Watcher.TapsJudged(Watcher.TAP_HOLD_MS);
+            Check("an earlier tap's verdict ends no later tap's wait, and none waits past TAP_HOLD_MS (" + waited + " ms)", waited >= Watcher.TAP_HOLD_MS && waited < Watcher.TAP_HOLD_MS + 200);
+            Watcher.Judged(1, 2);
+
+            // Presses: taps, near taps and selection drags
+            Check("a press that stayed and came up soon is a tap", Watcher.PressKind(3, 200) == "tap");
+            Check("one held long where it was is a near tap", Watcher.PressKind(3, 900) == "near");
+            Check("so is one that moved a little", Watcher.PressKind(8, 200) == "near");
+            Check("one that went 12 points or more is a drag", Watcher.PressKind(30, 200) == "drag");
+            var line = new List<POINT>();
+            for (int x = 0; x <= 300; x += 3) line.Add(new POINT(100 + x, 200 + x / 30));
+            Check("a drag along a line is a selection", Watcher.DragSelects(line, line[0], line[line.Count - 1], 1.5));
+            var ring = new List<POINT>();
+            for (int a = 0; a <= 360; a += 6) ring.Add(new POINT(400 + (int)(120 * Math.Cos(a * Math.PI / 180)), 300 + (int)(60 * Math.Sin(a * Math.PI / 180))));
+            Check("a ring is no selection", !Watcher.DragSelects(ring, ring[0], ring[ring.Count - 1], 1.5));
+            Check("nor a drag of under 12 points", !Watcher.DragSelects(line.GetRange(0, 4), line[0], line[3], 1.5));
+            Check("a short drag across one word (14 points) is a selection: no gap after a near tap", Watcher.DragSelects(line.GetRange(0, 8), line[0], line[7], 1.5) && Watcher.PressKind(14, 200) == "drag");
+
+            // Glances
+            Check("a glance at an ordinary window is read in full", !Reader.HalvesGlance(2000, 1) && !Reader.HalvesGlance(2400, 1.5));
+            Check("one on a display of scale 2, or wider than 3200 pixels, is halved", Reader.HalvesGlance(2000, 2) && Reader.HalvesGlance(3300, 1));
+            Check("a halved glance that found nothing is read again in full", Reader.GlanceRereads(0, -1, false) && !Reader.GlanceRereads(0, -1, true));
+            Check("so is one that found clearly fewer lines than the last careful read", Reader.GlanceRereads(10, 20, false) && !Reader.GlanceRereads(15, 20, false) && !Reader.GlanceRereads(2, 3, false));
+
+            // A tap's words never wait behind a whole window's (a reader of their own)
+            if (Ocr.Engine() != null)
+            {
+                Picture big = Paint(2400, 1600, delegate (Graphics g)
+                {
+                    using (var font = new Font("Segoe UI", 16))
+                        for (int r = 0; r < 50; r++) g.DrawString("Line " + r + " of the page the student reads, mitochondria and chloroplasts", font, Brushes.Black, 20, 10 + r * 31);
+                });
+                Picture small = Draw("Mitochondria turn glucose into energy", 900, 90);
+                var whole = new System.Threading.Thread(delegate () { Ocr.Read(big, 0, 0, 1); });
+                long w0 = Clock.Ms;
+                whole.Start();
+                System.Threading.Thread.Sleep(15);
+                long t1 = Clock.Ms;
+                List<OcrLine> words = Ocr.TryRead(small, 0, 0, 1, 120, true);
+                long tapMs = Clock.Ms - t1;
+                whole.Join();
+                long wholeMs = Clock.Ms - w0;
+                Check("a tap's words are read while a whole window is (tap " + tapMs + " ms, window " + wholeMs + " ms)", words != null && words.Count > 0);
+            }
+        }
+
+        static double Lerp(double[] a, double at)
+        {
+            int i = (int)Math.Floor(at);
+            double f = at - i;
+            return a[i] * (1 - f) + a[i + 1] * f;
+        }
+
+        static string Said(ShiftMatch m)
+        {
+            return m.Ok ? "dy " + m.Dy.ToString("0.00") + ", dx " + m.Dx.ToString("0.00") : "refused: " + m.Why;
+        }
+
+        /** A made up page w x h, `k` rows to a point: lines of words (dark strokes on white), each line
+         *  of its own length, paragraphs with gaps, a margin each side. */
+        static Look Page(Random rnd, int w, int h, int k)
+        {
+            Look g = Flat(w, h, 255);
+            int y = 6 * k;
+            while (y < h - 20 * k)
+            {
+                int lines = 2 + rnd.Next(6);
+                for (int l = 0; l < lines && y < h - 20 * k; l++)
+                {
+                    int x = 30 + rnd.Next(10), end = w - 30 - rnd.Next(w / 2);
+                    int tall = (9 + rnd.Next(5)) * k;
+                    while (x < end)
+                    {
+                        int word = 8 + rnd.Next(40);
+                        for (int c = x; c < Math.Min(end, x + word); c++)
+                        {
+                            if (rnd.Next(3) == 0) continue;
+                            int top = y + rnd.Next(tall / 3 + 1), bottom = y + tall - rnd.Next(tall / 4 + 1);
+                            byte ink = (byte)rnd.Next(70);
+                            for (int r = top; r < bottom; r++) g.G[r * w + c] = ink;
+                        }
+                        x += word + 4 + rnd.Next(5);
+                    }
+                    y += tall + (6 + rnd.Next(6)) * k;
+                }
+                y += (10 + rnd.Next(30)) * k;
+            }
+            return g;
+        }
+
+        /** Rows from..from+h of a look. */
+        static Look Rows(Look g, int from, int h)
+        {
+            var r = new Look(g.W, h);
+            Buffer.BlockCopy(g.G, from * g.W, r.G, 0, g.W * h);
+            return r;
+        }
+
+        /** A look `k` times taller averaged down to h rows, from row `from` of it. */
+        static Look Down(Look g, int k, int from, int h)
+        {
+            var r = new Look(g.W, h);
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < g.W; x++)
+                {
+                    int sum = 0;
+                    for (int j = 0; j < k; j++) sum += g.G[(from + y * k + j) * g.W + x];
+                    r.G[y * g.W + x] = (byte)(sum / k);
+                }
+            return r;
+        }
+
+        /** A look moved `dx` columns left (white comes in at the right). */
+        static Look Cols(Look g, int dx)
+        {
+            var r = Flat(g.W, g.H, 255);
+            for (int y = 0; y < g.H; y++) for (int x = 0; x + dx < g.W; x++) r.G[y * g.W + x] = g.G[y * g.W + x + dx];
+            return r;
         }
 
         // A wheel's step, and the keys that burst a window (the Mac's selftest, on made up numbers)

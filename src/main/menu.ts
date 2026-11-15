@@ -6,6 +6,7 @@ import { appEvents } from "./events";
 import { openExternal } from "./links";
 import { microphoneAnswer, setMicrophoneAnswer } from "./microphone";
 import {
+  boardOnTopNow,
   boardPlaceNow,
   closeScreenBoard,
   closeScreenTeach,
@@ -13,6 +14,7 @@ import {
   screenBoardContents,
   screenBoardFocused,
   screenTeachFocused,
+  setBoardOnTop,
   toggleBoardPlace,
 } from "./screenTeach";
 import { checkForUpdates } from "./updater";
@@ -196,6 +198,17 @@ export function installMenu(): void {
           enabled: boardPlaceNow() !== null,
           click: () => toggleBoardPlace(),
         },
+        // (Windows: the board's own window kept over other apps, or an ordinary one: off at first)
+        ...(isMac
+          ? []
+          : [
+              {
+                label: BOARD_COPY.onTop,
+                type: "checkbox" as const,
+                checked: boardOnTopNow(),
+                click: () => setBoardOnTop(!boardOnTopNow()),
+              },
+            ]),
         ...windowExtras,
       ],
     },

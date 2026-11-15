@@ -5,12 +5,15 @@ import {
   BLOB_SIZE,
   blobUp,
   choiceOf,
+  circleAsked,
   clampBlobPlace,
   CLICK_TRAVEL,
   defaultBlobPlace,
   isEditorApp,
   isPrivateApp,
   labelBounds,
+  liftOf,
+  pickAsked,
   PRIVATE_APPS,
   READER_APPS,
   selectionKept,
@@ -18,6 +21,7 @@ import {
   tapOnWords,
   tapRoute,
   windowIdOf,
+  type Lift,
   type Point,
 } from "./companionPlace";
 import { overlayArea } from "./boardHost";
@@ -42,7 +46,10 @@ import {
   type ScreenRead,
   type ScreenRelease,
   type ScreenScroll,
+  type ScreenSettled,
+  type ScreenShift,
   type ScreenTap,
+  type ScreenZoom,
 } from "./screen";
 import { toLocal, withoutDrawing } from "./screenRead";
 import {
@@ -107,8 +114,11 @@ import { getMainWindow } from "./windows";
 const SHORTCUT = "Control+Alt+E";
 /** Stillness over a window not glanced at yet, before it is. */
 const DWELL_MS = 120;
-/** A window glanced at again this long after the student's last scroll of it. */
-const AFTER_SCROLL_MS = 250;
+/** A window scrolled (or zoomed, or moving as the helper measures it) is glanced at again once the
+ *  helper says it holds still ("settled"), or this long after the last of it from a helper that
+ *  never says so. Never on a fixed moment after the wheel: a smooth scroll is still moving then,
+ *  and a glance taken mid-motion is words where they no longer are. */
+const SETTLE_FALLBACK_MS = 600;
 /** The tutor's flight home into the blob, before the window goes. */
 const HOME_MS = 320;
 /** The blob shows the tutor inside it again once it has flown home. */
@@ -192,10 +202,18 @@ interface Glance {
 const glances = new Map<number, Glance>();
 /** The glances the page holds, as last sent (in its points of the time). */
 const pageHas = new Set<number>();
+/** The windows whose glances went to the page last, oldest first, and the window of the lesson's
+ *  latest read: the ones the page's dock mic may pick with the cursor on the dock (pickAsked). A
+ *  few, so a glance landing as the mic is pressed does not push out the one the page picked. */
+let glancedLast: number[] = [];
+const GLANCED_KEPT = 4;
+let lessonReadWindow: number | null = null;
 /** Glances being taken, by window; `again`: wanted afresh once this one is in (`keepAgain`: by
  *  the tap's own new look, so the card stays). */
 const inFlight = new Map<number, { again: boolean; keepAgain: boolean }>();
 let dwell: NodeJS.Timeout | undefined;
+/** The windows moving (scrolled, zoomed), each with its fallback for the glance once still
+ *  (waitForStill): while one is here, no glance of it is sent or taken again but that one. */
 const afterScroll = new Map<number, NodeJS.Timeout>();
 /** The moved glance of the lesson's window waiting for its drag to stop (onLessonMoved). */
 let movedGlance: NodeJS.Timeout | undefined;
@@ -229,6 +247,12 @@ let cardTap: { window: number; at: number } | null = null;
  *  (`page`, decided at the release and kept for its verdict). */
 const releases = new Map<number, ScreenRelease & { at: number; page: boolean }>();
 const RELEASES_KEPT = 16;
+/** The latest drags heard end on an ordinary window that is not private (onLift), oldest first: the
+ *  only windows, and boxes, the page may read and picture for a circle or a selection
+ *  (circleAsked). A few, so a stray drag (a long press) while a ring is still being read keeps
+ *  its picture. */
+let lifts: Lift[] = [];
+const LIFTS_KEPT = 4;
 let cursorFeed: NodeJS.Timeout | undefined;
 let lastCursor: Point | null = null;
 /** What the helper was last told: the windows it counts as Tutornote's, the windows it watches. */
@@ -684,6 +708,7 @@ function setHeld(value: boolean): void {
     pendingRead = null;
     carefulReads.clear();
     cardTap = null;
+    lifts = [];
     companionWatch(false, stopIds());
     stopKey = "";
     observeKey = "";
@@ -719,6 +744,8 @@ function clearCaches(): void {
   changedGlance.clear();
   glances.clear();
   pageHas.clear();
+  glancedLast = [];
+  lessonReadWindow = null;
   inFlight.clear();
   windowApps.clear();
   privateWindows.clear();
@@ -728,6 +755,7 @@ function clearCaches(): void {
   windowMoved.clear();
   cardTap = null;
   releases.clear();
+  lifts = [];
   hovered = null;
   stopKey = "";
   observeKey = "";
@@ -781,6 +809,7 @@ function sendGlance(window: number, glance: Glance, keepCard = false, tap?: numb
     ...(empty ? { empty: true } : {}),
   });
   pageHas.add(window);
+  glancedLast = [...glancedLast.filter((w) => w !== window), window].slice(-GLANCED_KEPT);
 }
 
 function onOver(over: ScreenOver): void {
@@ -849,6 +878,9 @@ function onOver(over: ScreenOver): void {
  *  (sendGlance). `retry`: the second try after one that found no words (GLANCE_AGAIN_MS). */
 async function glance(window: number, opts: { keepCard?: boolean; retry?: boolean } = {}): Promise<void> {
   if (!on || held || privateWindows.has(window)) return;
+  // (still moving: a glance now is words where they no longer are; the one once it holds still,
+  // stillAgain, is taken for it)
+  if (afterScroll.has(window)) return;
   const going = inFlight.get(window);
   if (going) {
     going.again = true;
@@ -902,7 +934,8 @@ async function glance(window: number, opts: { keepCard?: boolean; retry?: boolea
     tellBlob();
     // (the dots go: nothing came)
     if (failed && on && hovered?.window === window) sendToPage("screen-teach:over", { window });
-    if (mine.again && on) void glance(window, { keepCard: mine.keepAgain });
+    // (not while the window is still moving: the glance once it holds still is the one: stillAgain)
+    if (mine.again && on && !afterScroll.has(window)) void glance(window, { keepCard: mine.keepAgain });
   }
 }
 
@@ -913,6 +946,7 @@ function onLessonRead(read: unknown): void {
   if (typeof r.window !== "number" || !Array.isArray(r.lines)) return;
   const kept: Glance = { read: r, at: Date.now(), stale: false };
   glances.set(r.window, kept);
+  lessonReadWindow = r.window;
   sendGlance(r.window, kept);
   refreshObserve();
 }
@@ -1189,18 +1223,81 @@ function onScroll(scroll: ScreenScroll): void {
   markReadStale(scroll.window);
   // (the lesson's own window: screenTeach.ts follows it)
   if (scroll.window === screenTeachLesson()?.window) return;
-  // (`lines`: a mouse wheel's, each taken as 40 points in dy; 0 for a trackpad)
+  // (`lines`: a mouse wheel's lines; Windows' helper says each notch as Windows is set, 3 lines of
+  // about 33 points by default (Win32.cs WheelPoints), so dy is that, not a fixed 40; 0 lines for a
+  // touchpad's points. The page learns the app's own step from its next glance.)
   sendToPage("screen-teach:window-scroll", { window: scroll.window, dy: scroll.dy, dx: scroll.dx, lines: scroll.lines });
-  const kept = glances.get(scroll.window);
+  moving(scroll.window);
+}
+
+/** `window` is moving (a scroll, a zoom, the helper's measured shift): its glance and the careful
+ *  reads for taps there are stale, a glance being taken (begun before this, or during it: its words
+ *  are where they were) is never sent, and it is glanced at again once it holds still. */
+function moving(window: number, still = true): void {
+  markReadStale(window);
+  const kept = glances.get(window);
   if (kept) kept.stale = true;
-  clearTimeout(afterScroll.get(scroll.window));
+  const going = inFlight.get(window);
+  if (going) going.again = true;
+  if (still) waitForStill(window);
+}
+
+/** The glance once `window` holds still: at its "settled" (onSettled), or SETTLE_FALLBACK_MS after
+ *  the last motion from a helper that never says it. */
+function waitForStill(window: number): void {
+  clearTimeout(afterScroll.get(window));
   afterScroll.set(
-    scroll.window,
-    setTimeout(() => {
-      afterScroll.delete(scroll.window);
-      if (on && hovered?.window === scroll.window) void glance(scroll.window);
-    }, AFTER_SCROLL_MS),
+    window,
+    setTimeout(() => stillAgain(window), SETTLE_FALLBACK_MS),
   );
+}
+
+function stillAgain(window: number): void {
+  clearTimeout(afterScroll.get(window));
+  afterScroll.delete(window);
+  if (on && !held && hovered?.window === window && !privateWindows.has(window)) void glance(window);
+}
+
+/** A window that moved holds still again (screen.ts "settled", a wheel's or not). The page hears it
+ *  for any window but the lesson's (screenTeach.ts tells that one's), so it stops treating that
+ *  window's glance as moving once the next one comes; the glance once still is taken now. */
+function onSettled(settled: ScreenSettled): void {
+  if (!on || held || privateWindows.has(settled.window)) return;
+  if (settled.window === screenTeachLesson()?.window) return;
+  sendToPage("screen-teach:settled", { window: settled.window });
+  if (afterScroll.has(settled.window)) stillAgain(settled.window);
+}
+
+/** Ctrl on a wheel over a window (screen.ts "zoom"): the app zooms, so every word read there is
+ *  somewhere else now. The page hears it (it drops that glance's card and band until the next
+ *  glance), and the window is glanced at again once it holds still. The lesson's: screenTeach.ts. */
+function onZoom(zoom: ScreenZoom): void {
+  if (!on || held || privateWindows.has(zoom.window)) return;
+  if (zoom.window === screenTeachLesson()?.window) {
+    markReadStale(zoom.window);
+    return;
+  }
+  sendToPage("screen-teach:zoom", { window: zoom.window });
+  moving(zoom.window);
+}
+
+/** The content's true move in a window, measured from its pixels by Windows' helper while it moves
+ *  (screen.ts "shift"): the page moves that window's glance by it. The lesson's: screenTeach.ts. */
+function onShift(shift: ScreenShift): void {
+  if (!on || held || privateWindows.has(shift.window)) return;
+  if (shift.window === screenTeachLesson()?.window) {
+    markReadStale(shift.window);
+    return;
+  }
+  sendToPage("screen-teach:shift", { window: shift.window, dy: shift.dy, dx: shift.dx, settled: shift.settled });
+  // (the last one, settled: the helper says it just before its "settled", which takes the glance.
+  // Never a motion of its own: should it come after that "settled" (an older helper), the still
+  // glance begun then is the one, and is neither thrown away nor waited for again)
+  if (shift.settled) {
+    if (afterScroll.has(shift.window)) moving(shift.window, false);
+    return;
+  }
+  moving(shift.window);
 }
 
 /*
@@ -1222,6 +1319,16 @@ function onChanged(changed: ScreenChanged): void {
   const lesson = screenTeachLesson();
   if (lesson && changed.window === lesson.window) return;
   if (held) return;
+  // A new look a wheel just sent explains (a newer helper says those too, `explained`): the scroll
+  // already told the page, and the glance once still (onSettled) is the one. Without a wait for it
+  // under way (the wheel was not one this side heard), it is glanced at as for any new look, but
+  // the page is not told of a change: the words moved, they did not go.
+  if (changed.explained) {
+    const kept = glances.get(changed.window);
+    if (kept) kept.stale = true;
+    if (!afterScroll.has(changed.window) && hovered?.window === changed.window && !privateWindows.has(changed.window)) glanceAfterChange(changed.window);
+    return;
+  }
   const tapsOwn = cardTap?.window === changed.window && Date.now() - cardTap.at < TAP_SETTLE_MS;
   if (!tapsOwn) sendToPage("screen-teach:changed", { run: 0, window: changed.window });
   const kept = glances.get(changed.window);
@@ -1320,7 +1427,7 @@ type ExplainAnswer = { ok: true } | { ok: false; reason: "off" | "private" | "fa
  *  for, whose careful read is the lesson's (carefulReads); without it, the last one taken for
  *  that window while the window has not scrolled or changed since the tap, else a read now (said
  *  stale when it has: the page realigns once the lesson is up). `row`: the tapped row's words as
- *  the page read them. */
+ *  the page read them. A window the student never pointed at, as this side heard them, is "bad". */
 async function explainAt(value: unknown): Promise<ExplainAnswer> {
   const p = (value ?? {}) as Record<string, unknown>;
   const choice = choiceOf(p.choice);
@@ -1328,10 +1435,19 @@ async function explainAt(value: unknown): Promise<ExplainAnswer> {
   if (!choice || typeof p.window !== "number" || !finite(p.x) || !finite(p.y)) return { ok: false, reason: "bad" };
   if (!on || held) return { ok: false, reason: "off" };
   const window = p.window;
+  const tap = finite(p.tap) ? p.tap : undefined;
+  // (a private one first, so the page shows its private card: this side holds a window as private
+  // only once the student was over it or tapped it, so that says nothing of any other window)
   if (privateWindows.has(window)) return { ok: false, reason: "private" };
+  // Only a window this side has seen the student at, never just an id the page names (pickAsked).
+  const tapped = tap !== undefined ? releases.get(tap)?.window : undefined;
+  const seen = { tapped, hovered: hovered?.window, glanced: glancedLast, lesson: lessonReadWindow, lifts };
+  if (!pickAsked(window, seen, Date.now())) {
+    console.warn("[companion] pick: not a window the student pointed at, refused");
+    return { ok: false, reason: "bad" };
+  }
   const at = screenPoint({ x: p.x, y: p.y });
   if (!at) return { ok: false, reason: "off" };
-  const tap = finite(p.tap) ? p.tap : undefined;
   const row = typeof p.row === "string" && p.row.trim() ? p.row.slice(0, ROW_CHARS) : undefined;
   // (the tap's own read, else the last one taken for a tap on that window, while that still shows
   // the window as it was tapped)
@@ -1388,7 +1504,12 @@ async function explainAt(value: unknown): Promise<ExplainAnswer> {
   "lift", with the drag's stroke): the page tells whether it was a ring round something to explain
   (the web app's lib/screen/circle.ts) and draws it. Not a drag on the page's own things (its card,
   its dock: the helper looks through them to the window below), nor while held. A private window's
-  says only that it is private: the page reads nothing there.
+  says only that it is private: the page reads nothing there. The drag is kept here (lifts) before
+  the page hears of it: what the page may read and picture for a ring is a drag of the student's,
+  never a window id it names itself.
+  A newer helper says a selection drag too (`ring` false, with where it was pressed: fx, fy): the
+  page explains the words between the press and the lift, from a careful read (circleRead), so it
+  is kept the same way, its box from the press to the lift.
 */
 function onLift(lift: ScreenLift): void {
   if (!on || held || pressWasThePage() || overlayInteractive()) return;
@@ -1396,16 +1517,32 @@ function onLift(lift: ScreenLift): void {
   if (!local) return;
   const info = windowApps.get(lift.window);
   const priv = lift.private || privateWindows.has(lift.window) || isPrivateApp(info?.bundle);
+  const press = lift.fx !== undefined && lift.fy !== undefined ? { x: lift.fx, y: lift.fy } : null;
+  if (!priv) lifts = [...lifts, liftOf(press ? { ...lift, points: [...lift.points, press] } : lift, Date.now())].slice(-LIFTS_KEPT);
   const points = lift.points.map((p) => localPoint(p)).filter((p): p is Point => p !== null);
-  sendToPage("screen-teach:lift", { window: lift.window, x: local.x, y: local.y, points, ...(priv ? { private: true } : {}) });
+  const from = press ? localPoint(press) : null;
+  sendToPage("screen-teach:lift", {
+    window: lift.window,
+    x: local.x,
+    y: local.y,
+    points,
+    ring: lift.ring !== false,
+    ...(from ? { fx: from.x, fy: from.y } : {}),
+    ...(priv ? { private: true } : {}),
+  });
 }
 
 /** A careful read of a circled window (the page's circleRead), in the page's points, or null. It
- *  is the window's pending read, so a lesson started there from the circle (explainAt) takes it. */
+ *  is the window's pending read, so a lesson started there from the circle (explainAt) takes it.
+ *  Only of a window the student has just drawn round or dragged across (circleAsked). */
 async function circleRead(value: unknown): Promise<ScreenRead | null> {
   const p = (value ?? {}) as Record<string, unknown>;
   if (typeof p.window !== "number" || !on || held) return null;
   const window = p.window;
+  if (!circleAsked(lifts, { window }, Date.now())) {
+    console.warn("[companion] circle read: not a window the student circled, refused");
+    return null;
+  }
   if (privateWindows.has(window) || isPrivateApp(windowApps.get(window)?.bundle)) return null;
   startCarefulRead(null, window);
   const mine = pendingRead;
@@ -1439,6 +1576,10 @@ async function circleCrop(value: unknown): Promise<{ data: string; type: "image/
   if (w < 8 || h < 8) return null;
   const at = screenPoint({ x, y });
   if (!at) return null;
+  if (!circleAsked(lifts, { window: p.window, box: { x: at.x, y: at.y, w, h } }, Date.now())) {
+    console.warn("[companion] circle picture: not inside a ring the student drew, refused");
+    return null;
+  }
   try {
     const crop = await cropScreen({ x: at.x, y: at.y, w, h });
     console.log(`[companion] circle: picture ${crop.w}x${crop.h}, ${Math.round((crop.data.length * 3) / 4 / 1024)} KB`);
@@ -1479,6 +1620,10 @@ export function installCompanion(): void {
   watchEvents.on("tap", onTap);
   watchEvents.on("scroll", onScroll);
   watchEvents.on("changed", onChanged);
+  // (a moving window holds still, a zoom, the content's measured move: the glance once still)
+  watchEvents.on("settled", onSettled);
+  watchEvents.on("zoom", onZoom);
+  watchEvents.on("shift", onShift);
   // (a drag's end: circle to explain)
   watchEvents.on("lift", onLift);
   // (another document in a window it knows, while a lesson watches one)

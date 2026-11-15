@@ -8,7 +8,7 @@ import readline from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { TAP_WORDS, type TapWords } from "./companionPlace";
 import { readOf } from "./screenRead";
-import { keyedOf, observeCommandOf, scrollOf } from "./screenWatch";
+import { changedOf, keyedOf, liftEventOf, observeCommandOf, scrollOf, settledOf, shiftOf, zoomOf } from "./screenWatch";
 
 /*
   The screen helper (helpers/screen/main.swift, built by scripts/build-screen-helper.sh):
@@ -248,6 +248,12 @@ function pixelsIn(msg: Record<string, unknown>): void {
     }
   }
   // (a page's drawing: readOf, screenRead.ts, keeps each only where it is well formed)
+  // (a selection drag's press point, as a point; a "shift"'s dy, dx are already points)
+  if (finiteNumber(msg.fx) && finiteNumber(msg.fy)) {
+    const f = screen.screenToDipPoint({ x: msg.fx, y: msg.fy });
+    msg.fx = f.x;
+    msg.fy = f.y;
+  }
   // (a drag's stroke: [x, y] pairs)
   if (Array.isArray(msg.points)) {
     msg.points = (msg.points as unknown[]).flatMap((pt) => {
@@ -366,6 +372,39 @@ export interface ScreenLift {
   window: number;
   points: Array<{ x: number; y: number }>;
   private: boolean;
+  /** Whether the drag may be a ring (circle to explain): false for a selection drag, which the
+   *  helper says with where it was pressed (`fx`, `fy`). A helper older than it sends rings only,
+   *  so a lift without `ring` is one (screenWatch.ts liftEventOf). */
+  ring?: boolean;
+  fx?: number;
+  fy?: number;
+}
+
+/** An observed window that was scrolled or changed has stopped moving: its look held steady for
+ *  the settle test (`settleMs`). After any motion, a wheel's or not (screenWatch.ts settledOf). */
+export interface ScreenSettled {
+  window: number;
+  settleMs: number;
+}
+
+/** Ctrl held on a wheel notch over a watched window: a zoom, never a scroll (`notches` in the
+ *  wheel's sense; screenWatch.ts zoomOf). */
+export interface ScreenZoom {
+  window: number;
+  notches: number;
+}
+
+/** The watched window's content moved by `dy`, `dx` points between two frames, measured from its
+ *  pixels while it moves (Windows' helper only; the Mac's never sends it); `settled` with the last
+ *  (screenWatch.ts shiftOf). */
+export interface ScreenShift {
+  window: number;
+  dy: number;
+  dx: number;
+  settled: boolean;
+  /** The helper could not measure this motion (its match refused): the shifts stop here, and what
+   *  was drawn on the window is not where it was. */
+  lost?: true;
 }
 
 /** A picture of part of the screen (cropScreen): a JPEG, base64, w x h pixels. */
@@ -380,6 +419,9 @@ export interface ScreenCrop {
 export interface ScreenChanged {
   window: number;
   settleMs: number;
+  /** A wheel just sent explains the new look (the helper says it now rather than keeping it back;
+   *  screenWatch.ts changedOf). Left out when not. */
+  explained?: boolean;
 }
 
 /** A key went down in the watched window's app, in front, that window observed: the first of a
@@ -451,7 +493,9 @@ export interface ScreenChordState {
  * says it). With the companion on, also "over" (a ScreenOver), "press" (a ScreenPress),
  * "release" (a ScreenRelease, ahead of its tap), and taps and scrolls on any window; with it off,
  * "press" on the watched window alone (from a helper that says it); and
- * "changed" (a ScreenChanged) for the windows observed, and "keyed" (a ScreenKeyed) for the
+ * "changed" (a ScreenChanged) for the windows observed, "settled" (a ScreenSettled) once one that
+ * moved holds still, "zoom" (a ScreenZoom) for Ctrl on a wheel over one, "shift" (a ScreenShift,
+ * Windows' helper only) while one moves, and "keyed" (a ScreenKeyed) for the
  * watched one while it is observed. While the talk chord is watched
  * (chordWatch), "chord" (a ScreenChord) and "chordState" (a ScreenChordState).
  */
@@ -586,18 +630,33 @@ function onLine(line: string): void {
     return;
   }
   if (msg.ev === "lift") {
-    if (finiteNumber(msg.x) && finiteNumber(msg.y) && typeof msg.window === "number") {
-      const points = Array.isArray(msg.points)
-        ? (msg.points as unknown[]).flatMap((pt) => (Array.isArray(pt) && finiteNumber(pt[0]) && finiteNumber(pt[1]) ? [{ x: pt[0], y: pt[1] }] : []))
-        : [];
-      watchEvents.emit("lift", { x: msg.x, y: msg.y, window: msg.window, points: points.slice(0, 512), private: msg.private === true } satisfies ScreenLift);
-    }
+    // (a ring, or with `ring: false` a selection drag and where it was pressed: liftEventOf)
+    const lift = liftEventOf(msg);
+    if (lift) watchEvents.emit("lift", lift);
     return;
   }
   if (msg.ev === "changed") {
-    if (typeof msg.window === "number") {
-      watchEvents.emit("changed", { window: msg.window, settleMs: finiteNumber(msg.settleMs) ? msg.settleMs : 0 } satisfies ScreenChanged);
-    }
+    // (`explained`: a wheel just sent explains the new look; the pages decide what to do with it)
+    const changed = changedOf(msg);
+    if (changed) watchEvents.emit("changed", changed);
+    return;
+  }
+  if (msg.ev === "settled") {
+    // (an observed window that moved, by a wheel or not, holds still again)
+    const settled = settledOf(msg);
+    if (settled) watchEvents.emit("settled", settled);
+    return;
+  }
+  if (msg.ev === "zoom") {
+    // (Ctrl on a wheel notch: the app zooms, so nothing read there keeps its place)
+    const zoom = zoomOf(msg);
+    if (zoom) watchEvents.emit("zoom", zoom);
+    return;
+  }
+  if (msg.ev === "shift") {
+    // (Windows' helper: the content's true move, measured from its pixels, while it moves)
+    const shift = shiftOf(msg);
+    if (shift) watchEvents.emit("shift", shift);
     return;
   }
   if (msg.ev === "keyed") {

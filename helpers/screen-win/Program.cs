@@ -325,10 +325,12 @@ namespace Tutornote.Screen
                     h = hit.Window;
                 }
                 bool fast = J.Str(cmd, "level") == "fast";
-                var answer = ReadWindow(h, fast);
+                long tapHeldMs;
+                var answer = ReadWindow(h, fast, out tapHeldMs);
                 if (answer == null) { Out.Error(id, "capture_failed"); return; }
                 answer["id"] = id;
-                if (heldMs > 50) answer["heldMs"] = heldMs;
+                // (how long it waited: for a window gone off screen a moment, and for a tap's verdict)
+                if (heldMs > 50 || tapHeldMs >= 10) answer["heldMs"] = heldMs + tapHeldMs;
                 Out.Send(answer);
             }
             catch (Exception e)
@@ -348,8 +350,33 @@ namespace Tutornote.Screen
          * list when there are none, `ink` (Geometry.cs) and `inkMs`. A glance measures none of them,
          * even one read again in full. Every box and point in screen pixels.
          */
-        public static Dictionary<string, object> ReadWindow(IntPtr h, bool fast)
+        /** A glance at a window this wide (pixels) or wider is read halved; and at any width on a
+         *  display of this scale or more, where a halved picture is still a pixel a point. */
+        const int HALVE_WIDER = 3200;
+        const double HALVE_SCALE = 2;
+        /** A halved glance that found fewer than this share of the lines the window's last careful
+         *  read found (KNOWN_LINES of them at the least) is read again in full: small text went. */
+        const double FEWER_SHARE = 0.6;
+        const int KNOWN_LINES = 5;
+        static readonly Dictionary<long, int> carefulLines = new Dictionary<long, int>();
+
+        /** Whether a glance's picture, `width` pixels wide on a display of `scale`, is read halved. */
+        public static bool HalvesGlance(int width, double scale)
         {
+            return scale >= HALVE_SCALE || width > HALVE_WIDER;
+        }
+
+        /** Whether a halved glance that found `found` lines is read again in full, the window's last
+         *  careful read having found `known` (-1: none yet) and the window not being blank. */
+        public static bool GlanceRereads(int found, int known, bool blank)
+        {
+            if (blank) return false;
+            return found == 0 || (known >= KNOWN_LINES && found < known * FEWER_SHARE);
+        }
+
+        public static Dictionary<string, object> ReadWindow(IntPtr h, bool fast, out long tapHeldMs)
+        {
+            tapHeldMs = 0;
             RECT frame = Win32.FrameOf(h);
             AppInfo app = Apps.OfWindow(h);
             string title = Apps.TabTitle(app, Win32.TextOf(h));
@@ -358,20 +385,34 @@ namespace Tutornote.Screen
             Picture pic = Capture.Window(h, frame, out fromScreen);
             if (pic == null) return null;
             Look look = Capture.Thumb(frame);
-            Watcher.Remember(h, look);
+            // (a glance's look is the watch's baseline only while the window holds still)
+            Watcher.Remember(h, look, !fast);
             long captureMs = Clock.Ms - t0;
+            // (the picture is taken; its words wait while a companion tap is being judged, so the tap's
+            // own words are not read behind them: the Mac's tapsJudged)
+            tapHeldMs = Watcher.TapsJudged(Watcher.TAP_HOLD_MS);
             double scale = 1;
             Picture read = pic;
-            if (fast && pic.W > 1600) { read = Capture.Half(pic); scale = 2; }
+            if (fast && HalvesGlance(pic.W, Win32.ScaleOf(h))) { read = Capture.Half(pic); scale = 2; }
             long t1 = Clock.Ms;
             List<OcrLine> lines = Ocr.Read(read, frame.Left, frame.Top, scale);
             string level = fast ? "fast" : "accurate";
-            // A glance that found nothing on a window that is not blank reads once more, in full.
-            if (fast && scale > 1 && lines.Count == 0 && !Diff.Blank(look))
+            long key = h.ToInt64();
+            int known;
+            lock (carefulLines) if (!carefulLines.TryGetValue(key, out known)) known = -1;
+            // A halved glance that found nothing, or clearly fewer lines than the last careful read, on
+            // a window that is not blank reads once more, in full.
+            if (fast && scale > 1 && GlanceRereads(lines.Count, known, Diff.Blank(look)))
             {
                 lines = Ocr.Read(pic, frame.Left, frame.Top, 1);
                 level = "accurate";
             }
+            if (!fast)
+                lock (carefulLines)
+                {
+                    if (carefulLines.Count >= 64 && !carefulLines.ContainsKey(key)) carefulLines.Clear();
+                    carefulLines[key] = lines.Count;
+                }
             long ocrMs = Clock.Ms - t1;
             double ground = Diff.Ground(look);
             // What else the page draws, from the whole picture before it goes: never a glance's, even

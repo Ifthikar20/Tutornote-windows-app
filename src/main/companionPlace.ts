@@ -2,9 +2,10 @@
   The desktop companion's rules that need no Electron (companion.ts): where its blob sits on a
   display, where the blob's label goes, when the blob shows at all, which apps it never reads,
   which apps keep a plain click for themselves, what a tap on another app's window comes to,
-  whether it was on the words, whose a double click's selection is, and how a tap's verdict reads
-  in the log. Numbers and strings in, numbers and strings out, so it is tested on its own
-  (scripts/tests/companionPlace.test.ts).
+  whether it was on the words, whose a double click's selection is, how a tap's verdict reads in
+  the log, which windows and boxes the page may read and picture for a circle, and which windows
+  it may start a lesson over. Numbers and strings in, numbers and strings out, so it is tested on
+  its own (scripts/tests/companionPlace.test.ts).
 
   Every point and box is in screen points, Electron's own space, as boardPlace.ts's are.
 */
@@ -273,3 +274,84 @@ export type ScreenChoice = "explain" | "ask";
  *  choices) is taken as "explain". */
 export const choiceOf = (value: unknown): ScreenChoice | null =>
   value === "explain" || value === "summarize" ? "explain" : value === "ask" ? "ask" : null;
+
+/*
+  Circle to explain (companion.ts onLift, circleRead, circleCrop): the page asks for a careful read
+  of the window a ring was drawn round, and for a picture of the ring's box. It may ask only for
+  what the student really did: a drag the helper heard end (a lift) on that window, lately, and a
+  picture inside that drag's stroke. Any other window id, a box elsewhere, or a drag long gone is
+  refused, so a script in the page cannot read or picture a window the student never circled.
+*/
+
+/** A rectangle as the helper's reads and crops have them, in screen points. */
+export type Rect = { x: number; y: number; w: number; h: number };
+/** A drag the helper heard end: its window, when (Date.now()), and its stroke's box. */
+export type Lift = { window: number; at: number; box: Rect };
+
+/** How long after a drag the page may read and picture it: the careful read (the helper's 30 s at
+ *  the most) and the picture asked for after it. */
+export const CIRCLE_MS = 60_000;
+/** How far past the stroke's box a picture may reach, in points: the page draws the ring from the
+ *  cursor it was fed when that stroke has more points than the helper's (160 at the most). */
+export const CIRCLE_PAD = 32;
+
+/** A lift as kept: its window, `at`, and the box round its stroke and the point it ended at. */
+export function liftOf(lift: Point & { window: number; points: readonly Point[] }, at: number): Lift {
+  let x0 = lift.x;
+  let y0 = lift.y;
+  let x1 = lift.x;
+  let y1 = lift.y;
+  for (const p of lift.points) {
+    x0 = Math.min(x0, p.x);
+    y0 = Math.min(y0, p.y);
+    x1 = Math.max(x1, p.x);
+    y1 = Math.max(y1, p.y);
+  }
+  return { window: lift.window, at, box: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } };
+}
+
+/** Whether the page's ask is for one of the student's latest drags (`lifts`): a read names only the
+ *  window, a picture its box too (screen points). The drag's window, CIRCLE_MS ago at the most (a
+ *  clock gone back is no drag), and the box inside its stroke's, CIRCLE_PAD over on each side. */
+export function circleAsked(lifts: readonly Lift[], ask: { window: number; box?: Rect }, now: number): boolean {
+  return lifts.some((l) => {
+    if (l.window !== ask.window || now < l.at || now - l.at > CIRCLE_MS) return false;
+    const b = ask.box;
+    const o = l.box;
+    return (
+      !b ||
+      (b.x >= o.x - CIRCLE_PAD && b.y >= o.y - CIRCLE_PAD && b.x + b.w <= o.x + o.w + CIRCLE_PAD && b.y + b.h <= o.y + o.h + CIRCLE_PAD)
+    );
+  });
+}
+
+/*
+  A pick (companion.ts explainAt): the page asks for a lesson over a window, from a card's choice,
+  the dock's mic or a ring's words. It may ask only for a window this side saw the student at, and
+  the page's own reasons for each are here: the window of the release the card opened for
+  (`tapped`), the one under the cursor (`hovered`), one of the few whose glances went to the page
+  last (`glanced`: the dock's mic, with the cursor on the dock, asks for the page's latest), the
+  window of the lesson's latest read (`lesson`: the page keeps the lesson's quick reads too, and
+  those never come this way), or one a ring was just drawn round (`lifts`). Any other id is
+  refused, so a script in the page cannot have a window the student left long ago read afresh.
+*/
+
+/** What this side saw the student at, for a pick (explainAt). */
+export type PickSeen = {
+  tapped: number | undefined;
+  hovered: number | null | undefined;
+  glanced: readonly number[];
+  lesson: number | null;
+  lifts: readonly Lift[];
+};
+
+/** Whether the page's pick of `window` is for one the student pointed at (PickSeen). */
+export function pickAsked(window: number, seen: PickSeen, now: number): boolean {
+  return (
+    seen.tapped === window ||
+    seen.hovered === window ||
+    seen.glanced.includes(window) ||
+    seen.lesson === window ||
+    circleAsked(seen.lifts, { window }, now)
+  );
+}

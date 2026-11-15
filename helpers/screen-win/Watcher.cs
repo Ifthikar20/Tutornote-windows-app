@@ -1,7 +1,10 @@
 // What the helper says unasked: the window under the cursor ("over"), presses, releases and their
 // verdicts ("press", "release", "tap"), scrolls, which app is in front and which document the
 // watched window shows and where it is ("front", "ident"), a new look on an observed window
-// ("changed"), and that a key went down in the watched window's app ("keyed": never which key).
+// ("changed", also when a wheel explains it: "explained"), that an observed window stopped moving
+// ("settled"), a Ctrl+wheel notch ("zoom", never a scroll), how far an observed window's content
+// really moved while it moves ("shift", Shift.cs), and that a key went down in the watched window's
+// app ("keyed": never which key).
 // The Mac helper's rules and numbers (main.swift), with the screen's grey thumbnails as its looks.
 using System;
 using System.Collections.Generic;
@@ -15,12 +18,18 @@ namespace Tutornote.Screen
         const int OVER_EVERY_MS = 50;
         const int IDENT_MS = 150;
         const int OBSERVE_IDLE_MS = 500;
+        /** The lesson's own window is looked at this often while nothing moves (others OBSERVE_IDLE_MS). */
+        const int LESSON_IDLE_MS = 250;
         const int POLL_MS = 100;
         const int BURST_MS = 1500;
         const int SCROLL_EXPLAINS_MS = 600;
         const int TURN_QUIET_MS = 2000;
         const int TAP_AFTER_MS = 150;
         const double TAP_TRAVEL = 5, TAP_MAX_MS = 700;
+        /** A press that came up within NEAR_TAP points of where it went down, however long it was
+         *  held, is told as a tap ("near"); a drag of SELECT_TRAVEL points or more that is no ring is
+         *  a selection ("lift" with ring false). Points, as TAP_TRAVEL. */
+        const double NEAR_TAP = 12, SELECT_TRAVEL = NEAR_TAP;
         const double LINE_REACH = 14, SIDE_REACH = 160, TAP_REACH = 60, CARET_WIDE = 3;
         const int SEEN_KEPT = 64;
         /** A key this fresh bursts the watched window (the Mac's KEY_FRESH_S), and one is said at most
@@ -47,13 +56,16 @@ namespace Tutornote.Screen
         static uint frontPid = uint.MaxValue;
 
         // New looks
-        sealed class Observed { public IntPtr H; public Look Prev, First, Said; public long Next, BurstUntil, ChangeStart; }
+        sealed class Observed { public IntPtr H; public Look Prev, First, Said; public long Next, BurstUntil, ChangeStart; public readonly Settle Motion = new Settle(); public bool PrevStale; }
         static readonly List<Observed> observed = new List<Observed>();
         static readonly Dictionary<long, Look> lastRead = new Dictionary<long, Look>();
         static readonly Queue<long> lastReadOrder = new Queue<long>();
         static readonly Dictionary<long, long> quietUntil = new Dictionary<long, long>();
         /** When each window was last scrolled by the student (a scroll explains that window's new look only). */
         static readonly Dictionary<long, long> lastScrollAt = new Dictionary<long, long>();
+        /** The companion tap being judged on each window (its id), from before its "release" is said
+         *  to the end of its verdict: a whole window's words wait for it (TapsJudged). */
+        static readonly Dictionary<long, long> judgingTaps = new Dictionary<long, long>();
         /** The windows observed now that turn by the page ("observe"'s "page"). */
         static HashSet<long> pagedObserved = new HashSet<long>();
         /** A lesson's turns by a key going on, by window, and when the last of each ended: their keys
@@ -213,6 +225,7 @@ namespace Tutornote.Screen
                     var known = observed.Find(o => o.H == h);
                     keep.Add(known ?? new Observed { H = h, BurstUntil = Clock.Ms + BURST_MS });
                 }
+                foreach (var o in observed) if (!keep.Contains(o)) Tracker.Drop(o.H);
                 observed.Clear();
                 observed.AddRange(keep);
                 pagedObserved = new HashSet<long>();
@@ -233,17 +246,75 @@ namespace Tutornote.Screen
             }
         }
 
-        /** The look a read saw: what "moved since its last read" and a new look are judged against. */
-        public static void Remember(IntPtr h, Look look)
+        /** The look a read saw: what "moved since its last read" and a new look are judged against.
+         *  A fast read's (`careful` false) is kept only while the window holds still: one taken mid
+         *  scroll would make the watch take the look it settles into for the one already read. */
+        public static void Remember(IntPtr h, Look look, bool careful)
         {
             if (look == null) return;
             lock (Gate)
             {
                 long key = h.ToInt64();
+                if (!KeepsLook(careful, MovingNow(key, Clock.Ms))) return;
                 if (!lastRead.ContainsKey(key)) lastReadOrder.Enqueue(key);
                 lastRead[key] = look;
                 while (lastReadOrder.Count > SEEN_KEPT) lastRead.Remove(lastReadOrder.Dequeue());
             }
+        }
+
+        /** Whether a read's look becomes the window's baseline: a careful read's always, a fast one's
+         *  only while the window is not moving. */
+        public static bool KeepsLook(bool careful, bool moving) { return careful || !moving; }
+
+        /** Whether window `key` moves now: an observed one not yet settled (its Settle alone: one that
+         *  settled is still, though scrolled a moment ago, so the read made at its settle is the
+         *  baseline), or any other scrolled less than SCROLL_EXPLAINS_MS ago. Under Gate. */
+        static bool MovingNow(long key, long now)
+        {
+            foreach (var o in observed) if (o.H.ToInt64() == key) return o.Motion.MovingNow(now);
+            long at;
+            return lastScrollAt.TryGetValue(key, out at) && now - at < SCROLL_EXPLAINS_MS;
+        }
+
+        /** An input moved `h` at `at` (a wheel, a zoom, a key): an observed window's motion begins or
+         *  goes on, it is looked at often, and (`track`) the shift tracker follows it. */
+        static void MotionInput(IntPtr h, long at, bool track)
+        {
+            bool seen = false;
+            lock (Gate)
+                foreach (var o in observed)
+                    if (o.H == h) { o.Motion.Input(at); o.BurstUntil = Clock.Ms + BURST_MS; o.Next = 0; seen = true; }
+            if (seen && track) Tracker.Moved(h, at);
+        }
+
+        /** A picture the shift tracker took of `h` at `now`, `step` from its held one (Diff.Mean): the
+         *  window's motion is fed by it. When that settles it, how long the motion took (ms), which the
+         *  tracker says (its last shift first, then "settled": SendSettled); else -1. */
+        public static long TrackerFrame(IntPtr h, long now, double step)
+        {
+            long ms = -1;
+            lock (Gate)
+                foreach (var o in observed)
+                    if (o.H == h)
+                    {
+                        ms = o.Motion.Frame(now, step);
+                        // (the watch's last thumbnail is from mid motion: not compared with, or it would
+                        // begin the motion again)
+                        if (ms >= 0) o.PrevStale = true;
+                    }
+            return ms;
+        }
+
+        /** `h` settled after `ms`: said by the shift tracker while it follows `h` (its last shift goes
+         *  before "settled"), else here. */
+        static void SaySettled(IntPtr h, long ms)
+        {
+            if (!Tracker.SettleVia(h, ms)) SendSettled(h, ms);
+        }
+
+        public static void SendSettled(IntPtr h, long ms)
+        {
+            Out.Send(new Dictionary<string, object> { { "ev", "settled" }, { "window", h.ToInt64() }, { "settleMs", ms } });
         }
 
         public static Look LastRead(IntPtr h)
@@ -312,6 +383,8 @@ namespace Tutornote.Screen
                     ThreadPool.QueueUserWorkItem(delegate
                     {
                         try { Judge(job); } catch (Exception e) { Out.Log("tap verdict failed: " + e.GetType().Name); }
+                        // (its verdict is said, or failed: a whole window's words wait no longer)
+                        finally { if (job.Companion) Judged(job.P.H.ToInt64(), job.Id); }
                     });
                 }
         }
@@ -478,6 +551,9 @@ namespace Tutornote.Screen
                 if (starts) lastKeyTaken = keyAt;
             }
             Burst(watchNow);
+            // (a key may scroll it: its motion runs from the key, settled as any, and is measured as a
+            // wheel's is; typing that only changes words is refused and said lost, never a guess)
+            MotionInput(watchNow, keyAt, true);
             if (starts) Out.Send(new Dictionary<string, object> { { "ev", "keyed" }, { "window", watchNow.ToInt64() } });
         }
 
@@ -493,12 +569,14 @@ namespace Tutornote.Screen
         static void CheckObserved(Observed o, long now)
         {
             if (now < o.Next) return;
-            o.Next = now + (now < o.BurstUntil ? POLL_MS : OBSERVE_IDLE_MS);
             long key = o.H.ToInt64(), quiet, scrolledAt;
             Look baseLook;
             bool paged;
             lock (Gate)
             {
+                // (often while it moves or was just pointed at; the lesson's own window a little
+                // oftener than others while nothing moves, and still lightly)
+                o.Next = now + (now < o.BurstUntil || o.Motion.MovingNow(now) ? POLL_MS : o.H == watched ? LESSON_IDLE_MS : OBSERVE_IDLE_MS);
                 if (!quietUntil.TryGetValue(key, out quiet)) quiet = 0;
                 if (!lastScrollAt.TryGetValue(key, out scrolledAt)) scrolledAt = -1;
                 paged = pagedObserved.Contains(key);
@@ -512,6 +590,21 @@ namespace Tutornote.Screen
             if (o.Prev != null)
             {
                 double step = Diff.Mean(t, o.Prev);
+                long settledMs = -1;
+                bool opened = false, still;
+                lock (Gate)
+                {
+                    bool was = o.Motion.Moving;
+                    if (!o.PrevStale) settledMs = o.Motion.Frame(now, step);
+                    o.PrevStale = false;
+                    // (a motion no input began: a scroll bar dragged, a touchpad's scroll, a middle-click
+                    // autoscroll. The shift tracker follows it from the standing picture taken before)
+                    opened = !was && o.Motion.Moving;
+                    still = !o.Motion.Moving && step < Diff.SETTLED_BELOW;
+                }
+                if (opened) Tracker.Moved(o.H, now, true);
+                // (held still: the picture a motion's first shift is measured from)
+                else if (still && settledMs < 0) Tracker.Standing(o.H, now);
                 if (step > Diff.CHANGED_ABOVE && o.ChangeStart == 0) o.ChangeStart = now;
                 if (step < Diff.SETTLED_BELOW)
                 {
@@ -520,12 +613,16 @@ namespace Tutornote.Screen
                     {
                         o.Said = t;
                         // (a wheel scroll begun just before the change explains it: the app follows scrolls
-                        // itself; never a page turned by the wheel in a window that turns by the page)
-                        if (!(o.ChangeStart > 0 && ScrollExplains(o.ChangeStart, scrolledAt, paged)))
-                            Out.Send(new Dictionary<string, object> { { "ev", "changed" }, { "window", o.H.ToInt64() }, { "settleMs", o.ChangeStart > 0 ? now - o.ChangeStart : 0 } });
+                        // itself; never a page turned by the wheel in a window that turns by the page.
+                        // Said all the same, "explained": main and the page decide, and a realign that
+                        // landed mid-scroll is put right by it)
+                        var changed = new Dictionary<string, object> { { "ev", "changed" }, { "window", o.H.ToInt64() }, { "settleMs", o.ChangeStart > 0 ? now - o.ChangeStart : 0 } };
+                        if (o.ChangeStart > 0 && ScrollExplains(o.ChangeStart, scrolledAt, paged)) changed["explained"] = true;
+                        Out.Send(changed);
                     }
                     o.ChangeStart = 0;
                 }
+                if (settledMs >= 0) SaySettled(o.H, settledMs);
             }
             o.Prev = t;
         }
@@ -592,6 +689,38 @@ namespace Tutornote.Screen
             lock (Gate) Burst(h);
         }
 
+        /** What a press that came up was, by how far it went (`travel`, points, the larger of its
+         *  moves across and down) and how long it was held: "tap"; "near", told as a tap all the same
+         *  (a hand that moved a little, or a long press that stayed: a highlight begun and let go
+         *  there); or "drag". */
+        public static string PressKind(double travel, long heldMs)
+        {
+            if (travel <= TAP_TRAVEL && heldMs <= TAP_MAX_MS) return "tap";
+            return travel < NEAR_TAP ? "near" : "drag";
+        }
+
+        /** Whether a drag's stroke (screen pixels, `scale` per point) closes on itself as a ring
+         *  could: it ends near where it began, against its size, and is wide and tall. */
+        public static bool LooksLikeRing(List<POINT> stroke, double scale)
+        {
+            if (stroke == null || stroke.Count < 3) return false;
+            int x0 = int.MaxValue, y0 = int.MaxValue, x1 = int.MinValue, y1 = int.MinValue;
+            foreach (var q in stroke) { x0 = Math.Min(x0, q.X); y0 = Math.Min(y0, q.Y); x1 = Math.Max(x1, q.X); y1 = Math.Max(y1, q.Y); }
+            double w = (x1 - x0) / scale, h = (y1 - y0) / scale;
+            POINT a = stroke[0], b = stroke[stroke.Count - 1];
+            double chord = Math.Sqrt((double)(b.X - a.X) * (b.X - a.X) + (double)(b.Y - a.Y) * (b.Y - a.Y)) / scale;
+            return Math.Min(w, h) >= 12 && chord <= Math.Max(24, 0.4 * Math.Max(w, h));
+        }
+
+        /** Whether a drag from `from` to `to` (stroke `stroke`) is a selection, said "ring" false: it
+         *  went SELECT_TRAVEL points or more and is nothing like a ring. Any other drag is said as a
+         *  ring may be (the page tells). */
+        public static bool DragSelects(List<POINT> stroke, POINT from, POINT to, double scale)
+        {
+            double chord = Math.Sqrt((double)(to.X - from.X) * (to.X - from.X) + (double)(to.Y - from.Y) * (to.Y - from.Y)) / scale;
+            return chord >= SELECT_TRAVEL && !LooksLikeRing(stroke, scale);
+        }
+
         public static void OnLeftUp()
         {
             Press pr = press;
@@ -604,18 +733,21 @@ namespace Tutornote.Screen
             long now = Clock.Ms;
             bool on; IntPtr w;
             lock (Gate) { on = companion; w = watched; }
-            double travel = TAP_TRAVEL * pr.Scale;
-            if (Math.Abs(p.X - pr.P.X) > travel || Math.Abs(p.Y - pr.P.Y) > travel || now - pr.At > TAP_MAX_MS)
+            double travel = Math.Max(Math.Abs(p.X - pr.P.X), Math.Abs(p.Y - pr.P.Y)) / Math.Max(0.5, pr.Scale);
+            string kind = PressKind(travel, now - pr.At);
+            if (kind == "drag")
             {
-                // No tap: a drag, or a long press. With the companion on it is said ("lift") with its
-                // stroke, and the page tells whether it is a ring; nothing is judged here.
+                // No tap: a drag. With the companion on it is said ("lift") with its stroke and where it
+                // was pressed (fx, fy); "ring" false for a selection drag (the words between the press
+                // and the lift are what the student marked), else the page tells whether it is a ring.
                 if (on && stroke != null)
                 {
                     stroke = DragAdd(stroke, p);
                     Out.Send(new Dictionary<string, object>
                     {
                         { "ev", "lift" }, { "x", p.X }, { "y", p.Y }, { "window", pr.H.ToInt64() }, { "private", pr.Private },
-                        { "points", LiftPoints(stroke, LIFT_POINTS) },
+                        { "points", LiftPoints(stroke, LIFT_POINTS) }, { "ring", !DragSelects(stroke, pr.P, p, Math.Max(0.5, pr.Scale)) },
+                        { "fx", pr.P.X }, { "fy", pr.P.Y },
                     });
                 }
                 return;
@@ -625,11 +757,17 @@ namespace Tutornote.Screen
             if (on)
             {
                 long id = Program.StartUnixMs + Interlocked.Increment(ref tapCount);
-                Out.Send(new Dictionary<string, object>
+                // (its verdict is being judged from now: a whole window's words wait for it, so its own
+                // words are not read behind them; set before the release is said, so before the app can
+                // ask for that read)
+                if (!pr.Private) Judging(pr.H.ToInt64(), id);
+                var release = new Dictionary<string, object>
                 {
                     { "ev", "release" }, { "id", id }, { "x", p.X }, { "y", p.Y }, { "window", pr.H.ToInt64() },
                     { "alt", pr.Alt }, { "clicks", clicks }, { "hand", pr.Hand }, { "private", pr.Private },
-                });
+                };
+                if (kind == "near") release["near"] = true;
+                Out.Send(release);
                 if (pr.Private)
                 {
                     // (said at once, with no picture)
@@ -647,6 +785,52 @@ namespace Tutornote.Screen
             }
         }
 
+        // ---- a tap being judged holds a whole window's words (the Mac's tapsJudged) ---------------
+
+        /** A whole window's words wait at most this long for a tap's verdict (the Mac's TAP_HOLD_MS). */
+        public const int TAP_HOLD_MS = 400;
+        const int TAP_HOLD_POLL_MS = 10;
+
+        /** The tap `id` on `window` is being judged. */
+        public static void Judging(long window, long id)
+        {
+            lock (Gate) judgingTaps[window] = id;
+        }
+
+        /** The tap `id` on `window` has its verdict (a later tap there keeps its own). */
+        public static void Judged(long window, long id)
+        {
+            lock (Gate) { long now; if (judgingTaps.TryGetValue(window, out now) && now == id) judgingTaps.Remove(window); }
+        }
+
+        /** Wait while a tap is being judged on any window, `ms` at most; how long it waited (ms). */
+        public static long TapsJudged(int ms)
+        {
+            long from = Clock.Ms;
+            while (Clock.Ms - from < ms)
+            {
+                lock (Gate) if (judgingTaps.Count == 0) break;
+                Thread.Sleep(TAP_HOLD_POLL_MS);
+            }
+            return Clock.Ms - from;
+        }
+
+        // ---- wheels -------------------------------------------------------------------------------
+
+        /** Whether a wheel event is a zoom (Ctrl held on an up or down notch), never a scroll. */
+        public static bool WheelZooms(bool ctrl, bool horizontal, int delta)
+        {
+            return ctrl && !horizontal && delta != 0;
+        }
+
+        /** Whether a wheel event stamps its window as scrolled (what explains its new look): only one
+         *  that moves it up or down and is said to main (`said`: the companion's, or on the lesson's
+         *  window). An unsaid one explains nothing the page will ever be told of. */
+        public static bool StampsScroll(bool scrolls, bool said)
+        {
+            return scrolls && said;
+        }
+
         public static void OnWheel(int delta, bool horizontal)
         {
             POINT p;
@@ -655,16 +839,29 @@ namespace Tutornote.Screen
             lock (Gate) { on = companion; w = watched; stopNow = stop; }
             Hit hit = Windows.At(p, null, Program.ParentPid, stopNow);
             if (hit.Window == IntPtr.Zero) return;
+            bool said = on || hit.Window == w;
+            long now = Clock.Ms;
+            if (WheelZooms(Win32.KeyDown(Win32.VK_CONTROL), horizontal, delta))
+            {
+                // (Ctrl and the wheel: the app zooms, its words grow or shrink where they are; no scroll
+                // to follow, and no shift to measure: its new look settles and is said, unexplained)
+                if (!said) return;
+                Out.Send(new Dictionary<string, object> { { "ev", "zoom" }, { "window", hit.Window.ToInt64() }, { "notches", delta / 120.0 } });
+                lock (Gate) Burst(hit.Window);
+                MotionInput(hit.Window, now, false);
+                return;
+            }
             WheelStep step = Wheel(delta, horizontal, Win32.WheelPoints(Win32.FrameOf(hit.Window), Win32.ScaleOf(hit.Window)), Win32.WheelLines());
+            if (!said) return;
             // (only a move up or down explains the new look it settles into: a pan sideways leaves it
             // to be said, as a key's is)
-            if (step.Scrolls) lock (Gate) lastScrollAt[hit.Window.ToInt64()] = Clock.Ms;
-            if (!on && hit.Window != w) return;
+            if (StampsScroll(step.Scrolls, said)) lock (Gate) lastScrollAt[hit.Window.ToInt64()] = now;
             Out.Send(new Dictionary<string, object>
             {
                 { "ev", "scroll" }, { "dy", step.Dy }, { "dx", step.Dx }, { "lines", step.Lines }, { "momentum", false }, { "window", hit.Window.ToInt64() },
             });
             lock (Gate) Burst(hit.Window);
+            if (step.Dy != 0 || step.Dx != 0) MotionInput(hit.Window, now, true);
         }
 
         /** What one wheel event says ("scroll"): the content moved up by Dy points and left by Dx;
@@ -730,15 +927,16 @@ namespace Tutornote.Screen
         {
             share = 0;
             if (before == null || after == null || Ocr.Engine() == null) return null;
-            // (within TEXT_BUDGET_MS: a whole window being read holds the text reader, and then the
-            // pixels decide, as on the Mac)
+            // (within TEXT_BUDGET_MS, on the text reader kept for taps (Ocr.TryRead's `tap`), which a
+            // whole window being read never holds; and a whole window's words wait for the verdict
+            // (TapsJudged): if they still did not come in time, the pixels decide, as on the Mac)
             long until = Clock.Ms + TEXT_BUDGET_MS;
             List<OcrLine> was, now;
             try
             {
-                was = Ocr.TryRead(before, 0, 0, 1, (int)Math.Max(0, until - Clock.Ms));
+                was = Ocr.TryRead(before, 0, 0, 1, (int)Math.Max(0, until - Clock.Ms), true);
                 if (was == null) return null;
-                now = Ocr.TryRead(after, 0, 0, 1, (int)Math.Max(0, until - Clock.Ms));
+                now = Ocr.TryRead(after, 0, 0, 1, (int)Math.Max(0, until - Clock.Ms), true);
                 if (now == null) return null;
             }
             catch (Exception) { return null; }

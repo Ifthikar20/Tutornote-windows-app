@@ -1,6 +1,7 @@
 // Windows' own text reader (Windows.Media.Ocr): on this PC, free, in the languages Windows has a
 // reader for (Settings > Time & language > Language: each language's "optical character
-// recognition" part). One picture at a time.
+// recognition" part). One picture at a time per reader: a whole window's read on one, a tap's few
+// words on another of their own (TapEngine), so a tap's verdict never waits behind a whole window.
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -21,6 +22,10 @@ namespace Tutornote.Screen
         static readonly object EngineGate = new object();
         static volatile OcrEngine engine;
         static volatile bool tried;
+        // (the reader kept for a tap's words, and its own lock)
+        static readonly object TapGate = new object();
+        static volatile OcrEngine tapEngine;
+        static volatile bool tapTried;
 
         public static string Language
         {
@@ -38,6 +43,23 @@ namespace Tutornote.Screen
                     tried = true;
                 }
                 return engine;
+            }
+        }
+
+        /** The reader kept for taps' words (another of the same languages), or the shared one if
+         *  Windows gives no second. */
+        public static OcrEngine TapEngine()
+        {
+            if (tapTried) return tapEngine ?? Engine();
+            lock (EngineGate)
+            {
+                if (!tapTried)
+                {
+                    if (Engine() != null)
+                        try { tapEngine = OcrEngine.TryCreateFromUserProfileLanguages(); } catch (Exception) { tapEngine = null; }
+                    tapTried = true;
+                }
+                return tapEngine ?? engine;
             }
         }
 
@@ -69,19 +91,26 @@ namespace Tutornote.Screen
          */
         public static List<OcrLine> TryRead(Picture pic, int left, int top, double scale, int waitMs)
         {
+            return TryRead(pic, left, top, scale, waitMs, false);
+        }
+
+        /** The same on the reader kept for taps (`tap`): it waits only for another tap's words. */
+        public static List<OcrLine> TryRead(Picture pic, int left, int top, double scale, int waitMs, bool tap)
+        {
             var lines = new List<OcrLine>();
-            var e = Engine();
+            var e = tap ? TapEngine() : Engine();
+            object gate = tap && tapEngine != null ? TapGate : Gate;
             if (e == null || pic == null || pic.W < 8 || pic.H < 8) return lines;
             int max = (int)OcrEngine.MaxImageDimension;
             while (pic.W > max || pic.H > max) { pic = Capture.Half(pic); scale *= 2; }
             OcrResult result;
-            if (!Monitor.TryEnter(Gate, waitMs)) return null;
+            if (!Monitor.TryEnter(gate, waitMs)) return null;
             try
             {
                 var bitmap = SoftwareBitmap.CreateCopyFromBuffer(CryptographicBuffer.CreateFromByteArray(pic.Bgra), BitmapPixelFormat.Bgra8, pic.W, pic.H, BitmapAlphaMode.Premultiplied);
                 result = Wait(e.RecognizeAsync(bitmap));
             }
-            finally { Monitor.Exit(Gate); }
+            finally { Monitor.Exit(gate); }
             foreach (var line in result.Lines)
             {
                 var l = new OcrLine { T = line.Text };
