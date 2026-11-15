@@ -21,7 +21,7 @@ contextBridge.exposeInMainWorld(
     dragEnd: (): void => ipcRenderer.send("blob:drag-end"),
     /** Turn the tutor on or off (a click, as dragEnd decides; or from the keyboard). */
     toggle: (): void => ipcRenderer.send("blob:toggle"),
-    /** A right click: Turn off, Hide the tutor. */
+    /** A right click: Turn off, Close Sprout. */
     menu: (): void => ipcRenderer.send("blob:menu"),
     /** The pointer came over the blob, or left it: its label shows, or goes. */
     hover: (on: unknown): void => ipcRenderer.send("blob:hover", on === true),

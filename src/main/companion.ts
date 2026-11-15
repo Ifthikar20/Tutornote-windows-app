@@ -78,7 +78,7 @@ import { getMainWindow } from "./windows";
 /*
   The desktop companion: Tutornote's tutor over any app ("Teach mode over any app").
 
-  A blob lives on the desktop (static/blob.html, a 64 point window of its own that floats over every
+  A blob lives on the desktop (static/blob.html: Sprout, in a 64 point window of its own that floats over every
   app and every Space and never takes the keys). Click it, or press ⌃⌥E in any app, and the tutor
   hops out and trails the cursor over whatever is under it: a Kindle book, Kortext, a PDF in
   Chrome. It is drawn by the lesson's own see-through window (screenTeach.ts companion mode, the web
@@ -550,7 +550,7 @@ function showMenu(): void {
   endDrag(false);
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(on ? [{ label: "Turn off", click: () => turnOff() }] : []),
-    { label: "Hide the tutor", click: () => hideBlob() },
+    { label: "Close Sprout", click: () => hideBlob() },
   ];
   Menu.buildFromTemplate(template).popup({ window: b });
 }
