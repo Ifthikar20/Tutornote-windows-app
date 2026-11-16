@@ -1,6 +1,7 @@
 /*
   The desktop companion's rules that need no Electron (companion.ts): where its blob sits on a
-  display, where the blob's label goes, when the blob shows at all, which apps it never reads,
+  display, where the blob's label goes, when the blob shows at all, what dropping it comes to,
+  which apps it never reads,
   which apps keep a plain click for themselves, what a tap on another app's window comes to,
   whether it was on the words, whose a double click's selection is, how a tap's verdict reads in
   the log, which windows and boxes the page may read and picture for a circle, and which windows
@@ -77,9 +78,39 @@ export const CLICK_TRAVEL = 4;
 
 /** Whether the blob's window is up: shown (the tab bar's button, ⌃⌥E), but not while the tutor is
  *  on with a lesson page that has a dock of its own (its pause and × are the controls then). A
- *  page too old to say so keeps the blob up while on, its ring the only way to turn it off. */
-export function blobUp(s: { shown: boolean; on: boolean; pageDock: boolean }): boolean {
-  return s.shown && !(s.on && s.pageDock);
+ *  page too old to say so keeps the blob up while on, its ring the only way to turn it off.
+ *  `attention`: the blob has something to say while on (the screen helper keeps stopping, and is
+ *  being started again): it is up whatever the page's dock, showing so. */
+export function blobUp(s: { shown: boolean; on: boolean; pageDock: boolean; attention?: boolean }): boolean {
+  return s.shown && (!(s.on && s.pageDock) || s.attention === true);
+}
+
+/*
+  Dropping the blob (companion.ts endDrag): a press and release that hardly moved it is a click (it
+  turns the tutor on or off); a short drag only moves it. A drag let go of at the edge of the screen
+  parks it there, as before (where the student keeps it). Let go of anywhere else, over another
+  app's window, the tutor reads that window and explains from the point it was dropped at, and the
+  blob flies back home ("read"): whether that window may be read is companion.ts's to say then.
+*/
+
+/** A drag shorter than this (points) only moves the blob, wherever it is let go of. */
+export const DROP_TRAVEL = 24;
+/** Let go of this near (points, its centre) a work area's edge, the blob is parked there. */
+export const PARK_EDGE = BLOB_SIZE + BLOB_EDGE;
+
+export type BlobDrop = "click" | "place" | "read";
+
+/** What the end of a drag of the blob comes to: `travel`, the furthest it went from where it was
+ *  taken (points); `asClick`, the blob's page heard its button come up (not a drag given up);
+ *  `at`, where it was let go of (the cursor), on the display whose work area is `work`. */
+export function blobDrop(d: { travel: number; asClick: boolean; at: Point; work: Box }): BlobDrop {
+  if (d.asClick && d.travel < CLICK_TRAVEL) return "click";
+  if (!d.asClick || !(d.travel >= DROP_TRAVEL)) return "place";
+  const w = d.work;
+  const inside = d.at.x >= w.x && d.at.y >= w.y && d.at.x < w.x + w.width && d.at.y < w.y + w.height;
+  if (!inside) return "place";
+  const edge = Math.min(d.at.x - w.x, d.at.y - w.y, w.x + w.width - d.at.x, w.y + w.height - d.at.y);
+  return edge < PARK_EDGE ? "place" : "read";
 }
 
 /** The CGWindowID in a BrowserWindow's getMediaSourceId() ("window:<id>:<other>"), or null. */
@@ -142,7 +173,8 @@ export const EDITOR_PREFIXES: readonly string[] = ["com.jetbrains."];
 export const READER_APPS: ReadonlySet<string> = new Set(["com.amazon.Lassen", "com.amazon.Kindle", "com.apple.iBooksX", "com.apple.Preview"]);
 
 /*
-  Browsers, for a PDF open in one (selectionKept): Chrome and Edge in any of their channels (by
+  Browsers, where a double tap is the student's and explained at once (selectionKept,
+  explainsNow), and a caret in a PDF too (caretKept): Chrome and Edge in any of their channels (by
   their bundle's prefix, BROWSER_PREFIXES), Safari, Firefox, Arc, Brave, Opera, Vivaldi, Orion.
 */
 export const BROWSER_APPS: ReadonlySet<string> = new Set([
@@ -167,20 +199,58 @@ export const isReaderApp = (bundle: string | undefined): boolean => Boolean(bund
 export const isBrowserApp = (bundle: string | undefined): boolean =>
   Boolean(bundle && (BROWSER_APPS.has(bundle) || BROWSER_PREFIXES.some((prefix) => bundle.startsWith(prefix))));
 
+/** Whether a browser's or a reader's window (a PDF viewer's too: READER_APPS) is the student's to
+ *  point into: a double tap there is the student's (selectionKept), and explained at once
+ *  (explainsNow). Never an editor's. */
+const pointedInto = (bundle: string | undefined): boolean => (isBrowserApp(bundle) || isReaderApp(bundle)) && !isEditorApp(bundle);
+
+/** A browser's window showing a PDF, as its title says (ending in ".pdf"). Edge shows a PDF's own
+ *  title when it has one, so such a PDF is not told by this, and is a web page here. */
+const browserPdf = (bundle: string | undefined, title: string | undefined): boolean =>
+  isBrowserApp(bundle) && /\.pdf$/i.test((title ?? "").trim());
+
 /**
  * Whether a tap whose only doing was selecting words (`words` "select": a double click, or the
  * single tap a double click followed, whose verdict says so too) was the student's, not its app's:
- * in a reader (READER_APPS: Kindle, Books, Preview) or in a browser's window showing a PDF (its
- * title, as the companion last read it, ends in ".pdf"). A student double clicks a word in a book
- * to point at it (9 of the founder's 20 recorded taps were second or third clicks), and the card
- * stays, or the lesson goes there. Anywhere else (an editor, a web page, any other app) selecting
- * is what the click did in its app, as before.
+ * in a browser or a reader (READER_APPS: Kindle, Books, Preview; a browser's PDF too), where a
+ * student double clicks a word to point at it (9 of the founder's 20 recorded taps were second or
+ * third clicks; 2026-11-15: "whenever you tap on some PDF or web page, it should understand it"),
+ * and the card stays, or the lesson goes there. Not under a pointing hand (`hand`, as the release
+ * said: a link, a button, a video, which the double click opened), and nowhere else: in an editor
+ * selecting is what a double click is for, and in any other app (mail, chat, music, a file dialog)
+ * a double click opens something, as before. `title` is no longer needed, and kept for the callers
+ * that still say it.
  */
-export function selectionKept(t: { words?: string; bundle?: string; title?: string }): boolean {
-  if (t.words !== "select") return false;
-  if (isReaderApp(t.bundle)) return true;
-  return isBrowserApp(t.bundle) && /\.pdf$/i.test((t.title ?? "").trim());
+export function selectionKept(t: { words?: string; bundle?: string; title?: string; hand?: boolean }): boolean {
+  return t.words === "select" && t.hand !== true && pointedInto(t.bundle);
 }
+
+/** Whether a click whose verdict says only that it put a caret (`words` "caret") was the student's:
+ *  in a reader, or in a browser's PDF (its title ends in ".pdf"), where a click on a page's words
+ *  shows a caret in its text layer and does nothing else. On a web page a caret is a field's or a
+ *  web editor's (a Google Doc, a mail being written, a search box), as anywhere else: the app's. */
+export function caretKept(t: { words?: string; bundle?: string; title?: string }): boolean {
+  return t.words === "caret" && (isReaderApp(t.bundle) || browserPdf(t.bundle, t.title)) && !isEditorApp(t.bundle);
+}
+
+/** Whether a tap's verdict says its app used the click (`acted`), the selection and caret rules
+ *  above taken into account: a selection or a caret the student made to point is not the app's. */
+export function tapActed(t: { acted: boolean; words?: string; bundle?: string; title?: string; hand?: boolean }): boolean {
+  return t.acted && !selectionKept(t) && !caretKept(t);
+}
+
+/** Whether a tap is a double tap (`clicks` two or more, as its release said: never the first
+ *  click's verdict, which a Mac helper also says "select" once the second has come) in a browser,
+ *  a reader or a PDF viewer, not under a pointing hand: the student wants that explained now, with
+ *  no card to pick from (the page starts the lesson at once). Never in an editor. Whether it was on
+ *  the words read there is the caller's to say (companion.ts onTap, tapOnWords). */
+export function explainsNow(t: { clicks?: number; bundle?: string; hand?: boolean }): boolean {
+  return (t.clicks ?? 1) >= 2 && t.hand !== true && pointedInto(t.bundle);
+}
+
+/** A double tap explained at once (explainsNow) on a window less than this long (ms) after the last
+ *  one there is the same one's third click (or the Mac's late verdict on its first): not again. */
+export const EXPLAIN_AGAIN_MS = 1_000;
 
 /**
  * What a tap on another app's window comes to, with the companion on. "lesson": it is on the

@@ -2,6 +2,8 @@
 // reader for (Settings > Time & language > Language: each language's "optical character
 // recognition" part). One picture at a time per reader: a whole window's read on one, a tap's few
 // words on another of their own (TapEngine), so a tap's verdict never waits behind a whole window.
+// No read waits for ever: one the reader has not finished in READ_MS is given up and its reader made
+// again, and a whole window's read waits WHOLE_GATE_MS at the most for another's.
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -63,22 +65,73 @@ namespace Tutornote.Screen
             }
         }
 
-        public static T Wait<T>(IAsyncOperation<T> op)
+        /** A read the reader has not finished in this long is stuck (a whole window's takes well under a
+         *  second, as a rule): it is given up, its reader retired (Retire) and a new one made for the next
+         *  read, so one stuck read never holds every read after it. A tap's few words, sooner. */
+        public const int READ_MS = 8000, TAP_READ_MS = 2000;
+        /** A whole window's read waits this long at the most for the reader another whole window's read
+         *  is using, then answers capture_failed (main's own wait for a read is 30 s). */
+        public const int WHOLE_GATE_MS = 5000;
+
+        /** A read given up as stuck (READ_MS). */
+        public sealed class StuckException : Exception
         {
-            using (var done = new ManualResetEvent(false))
+            public StuckException() : base("ocr stuck") { }
+        }
+
+        /** Selftest only: the next read that gets a reader hangs as a stuck one would, and is given up
+         *  after this many ms (in place of READ_MS). 0: off. */
+        public static int StallNextMs;
+        /** How many readers were retired as stuck (the selftest's, and the log's). */
+        public static int Retired;
+
+        /** The reader `e` is retired: the next read asking for its kind gets a new one. */
+        public static void Retire(OcrEngine e)
+        {
+            if (e == null) return;
+            lock (EngineGate)
             {
-                op.Completed = delegate { done.Set(); };
-                if (op.Status == AsyncStatus.Started) done.WaitOne();
-                if (op.Status != AsyncStatus.Completed)
-                    throw new InvalidOperationException("ocr " + op.Status + (op.ErrorCode == null ? "" : ": " + op.ErrorCode.Message));
-                return op.GetResults();
+                bool any = false;
+                if (ReferenceEquals(engine, e)) { engine = null; tried = false; any = true; }
+                if (ReferenceEquals(tapEngine, e)) { tapEngine = null; tapTried = false; any = true; }
+                if (any) Interlocked.Increment(ref Retired);
             }
+        }
+
+        /** The result of `op`, waiting `ms` at the most: past it, `op` is cancelled, `e` retired and
+         *  StuckException thrown. */
+        public static T Wait<T>(IAsyncOperation<T> op, OcrEngine e, int ms)
+        {
+            // (not disposed when it is given up: the op may still finish later and set it)
+            var done = new ManualResetEvent(false);
+            op.Completed = delegate { try { done.Set(); } catch (ObjectDisposedException) { } };
+            if (op.Status == AsyncStatus.Started && !done.WaitOne(ms))
+            {
+                try { op.Cancel(); } catch (Exception) { }
+                Retire(e);
+                Out.Log("ocr: a read stuck past " + ms + " ms was given up; a new reader is made");
+                throw new StuckException();
+            }
+            done.Dispose();
+            if (op.Status != AsyncStatus.Completed)
+                throw new InvalidOperationException("ocr " + op.Status + (op.ErrorCode == null ? "" : ": " + op.ErrorCode.Message));
+            return op.GetResults();
+        }
+
+        /** A stalled read (StallNextMs), given up as a stuck one is. */
+        static void Stall(OcrEngine e, int ms)
+        {
+            using (var never = new ManualResetEvent(false)) never.WaitOne(ms);
+            Retire(e);
+            throw new StuckException();
         }
 
         /**
          * The lines of a picture, their boxes in screen pixels: `left`, `top` is where the picture's
          * top left is on the screen, and `scale` how many screen pixels one picture pixel stands for
-         * (2 for a picture halved for a glance).
+         * (2 for a picture halved for a glance). It waits for the reader as long as another read holds
+         * it, which is READ_MS at the most; a whole window's read for the app uses TryRead with
+         * WHOLE_GATE_MS instead (Program.cs ReadWindow).
          */
         public static List<OcrLine> Read(Picture pic, int left, int top, double scale)
         {
@@ -97,6 +150,7 @@ namespace Tutornote.Screen
         /** The same on the reader kept for taps (`tap`): it waits only for another tap's words. */
         public static List<OcrLine> TryRead(Picture pic, int left, int top, double scale, int waitMs, bool tap)
         {
+            // (a read stuck past READ_MS throws StuckException: the caller answers as for any failed read)
             var lines = new List<OcrLine>();
             var e = tap ? TapEngine() : Engine();
             object gate = tap && tapEngine != null ? TapGate : Gate;
@@ -108,7 +162,9 @@ namespace Tutornote.Screen
             try
             {
                 var bitmap = SoftwareBitmap.CreateCopyFromBuffer(CryptographicBuffer.CreateFromByteArray(pic.Bgra), BitmapPixelFormat.Bgra8, pic.W, pic.H, BitmapAlphaMode.Premultiplied);
-                result = Wait(e.RecognizeAsync(bitmap));
+                int stall = Interlocked.Exchange(ref StallNextMs, 0);
+                if (stall > 0) Stall(e, stall);
+                result = Wait(e.RecognizeAsync(bitmap), e, tap ? TAP_READ_MS : READ_MS);
             }
             finally { Monitor.Exit(gate); }
             foreach (var line in result.Lines)

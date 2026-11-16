@@ -82,7 +82,7 @@ namespace Tutornote.Screen
         // Presses and taps
         sealed class Press
         {
-            public long At; public POINT P; public IntPtr H; public string Title = ""; public bool Alt, Hand, Private, Second;
+            public long At; public POINT P; public IntPtr H; public string Title = ""; public bool Alt, Hand, Private, Second, Touch;
             public double Scale = 1; public RECT Frame, LineRect; public Look Thumb, Patch; public Picture PatchPic;
         }
         static Press press;
@@ -335,6 +335,21 @@ namespace Tutornote.Screen
         static bool PrivateApp(AppInfo app, string title)
         {
             return app.Private || privateBundles.Contains(app.Bundle) || Apps.PrivateTitle(app, title);
+        }
+
+        /** Whether a window read by a point (Reader.Read with no window: one never hovered) is never
+         *  to be read: a private app's (the helper's own list, and the app's), a private browsing
+         *  window, or any window while the secure desktop has the keys. */
+        public static bool PointReadPrivate(IntPtr h)
+        {
+            return ReadRefused(Apps.OfWindow(h), Win32.TextOf(h), Windows.SecureDesktop());
+        }
+
+        /** The rule of PointReadPrivate, for a window of `app` titled `raw` (its own title bar's words),
+         *  `secureDesktop` whether the secure desktop has the keys. */
+        public static bool ReadRefused(AppInfo app, string raw, bool secureDesktop)
+        {
+            return secureDesktop || PrivateApp(app, raw);
         }
 
         static void Loop()
@@ -644,10 +659,23 @@ namespace Tutornote.Screen
             return Win32.GetCursorInfo(ref info) && info.hCursor == Win32.LoadCursor(IntPtr.Zero, new IntPtr(Win32.IDC_HAND));
         }
 
+        /** Whether a press is listened for at all: the companion on, or a lesson's window watched. */
+        public static bool Listening()
+        {
+            lock (Gate) return companion || watched != IntPtr.Zero;
+        }
+
         public static void OnLeftDown()
         {
             POINT p;
             Win32.GetCursorPos(out p);
+            OnLeftDown(p, false);
+        }
+
+        /** The primary button went down at `p`: a mouse's (Raw Input), or a finger's or a pen's
+         *  (`touch`, Input's TouchPoll), said the same way, "touch" true for the second. */
+        public static void OnLeftDown(POINT p, bool touch)
+        {
             drag = null;
             bool on, watching;
             HashSet<long> stopNow;
@@ -663,7 +691,7 @@ namespace Tutornote.Screen
             double s = Win32.ScaleOf(h);
             var pr = new Press
             {
-                At = now, P = p, H = h, Title = title, Alt = Win32.KeyDown(Win32.VK_MENU), Hand = CursorIsHand(), Scale = s,
+                At = now, P = p, H = h, Title = title, Alt = Win32.KeyDown(Win32.VK_MENU), Hand = CursorIsHand(), Scale = s, Touch = touch,
                 Second = now - lastTapUpAt <= Win32.GetDoubleClickTime()
                     && Math.Abs(p.X - lastTapAt.X) <= Win32.GetSystemMetrics(Win32.SM_CXDOUBLECLK)
                     && Math.Abs(p.Y - lastTapAt.Y) <= Win32.GetSystemMetrics(Win32.SM_CYDOUBLECLK),
@@ -673,7 +701,12 @@ namespace Tutornote.Screen
             // ahead of the new look a click in a reader's margin may bring)
             bool lessonWindow;
             lock (Gate) lessonWindow = h == watched;
-            if (on || lessonWindow) Out.Send(new Dictionary<string, object> { { "ev", "press" }, { "x", p.X }, { "y", p.Y }, { "window", h.ToInt64() } });
+            if (on || lessonWindow)
+            {
+                var said = new Dictionary<string, object> { { "ev", "press" }, { "x", p.X }, { "y", p.Y }, { "window", h.ToInt64() } };
+                if (touch) said["touch"] = true;
+                Out.Send(said);
+            }
             if (!pr.Private && !pr.Second)
             {
                 pr.Frame = Win32.FrameOf(h);
@@ -723,13 +756,19 @@ namespace Tutornote.Screen
 
         public static void OnLeftUp()
         {
+            POINT p;
+            Win32.GetCursorPos(out p);
+            OnLeftUp(p);
+        }
+
+        /** The primary button came up at `p` (a mouse's, or a finger's or a pen's: the press says). */
+        public static void OnLeftUp(POINT p)
+        {
             Press pr = press;
             press = null;
             List<POINT> stroke = drag;
             drag = null;
             if (pr == null) return;
-            POINT p;
-            Win32.GetCursorPos(out p);
             long now = Clock.Ms;
             bool on; IntPtr w;
             lock (Gate) { on = companion; w = watched; }
@@ -743,12 +782,14 @@ namespace Tutornote.Screen
                 if (on && stroke != null)
                 {
                     stroke = DragAdd(stroke, p);
-                    Out.Send(new Dictionary<string, object>
+                    var lift = new Dictionary<string, object>
                     {
                         { "ev", "lift" }, { "x", p.X }, { "y", p.Y }, { "window", pr.H.ToInt64() }, { "private", pr.Private },
                         { "points", LiftPoints(stroke, LIFT_POINTS) }, { "ring", !DragSelects(stroke, pr.P, p, Math.Max(0.5, pr.Scale)) },
                         { "fx", pr.P.X }, { "fy", pr.P.Y },
-                    });
+                    };
+                    if (pr.Touch) lift["touch"] = true;
+                    Out.Send(lift);
                 }
                 return;
             }
@@ -767,6 +808,7 @@ namespace Tutornote.Screen
                     { "alt", pr.Alt }, { "clicks", clicks }, { "hand", pr.Hand }, { "private", pr.Private },
                 };
                 if (kind == "near") release["near"] = true;
+                if (pr.Touch) release["touch"] = true;
                 Out.Send(release);
                 if (pr.Private)
                 {

@@ -78,6 +78,12 @@ namespace Tutornote.Screen
             Check("an InPrivate window is private", Apps.PrivateTitle(edge, "New tab - [InPrivate] - Microsoft Edge"));
             Check("an ordinary tab is not", !Apps.PrivateTitle(edge, "Photosynthesis - Wikipedia - Microsoft Edge"));
             Check("a document called Incognito in Word is not a private window", !Apps.PrivateTitle(new AppInfo { Bundle = "com.microsoft.Word" }, "Incognito.docx - Word"));
+            // A read by a point (the blob dropped on a window never hovered): refused where the watch
+            // would call the window private
+            Check("a drop on an InPrivate window reads nothing", Watcher.ReadRefused(edge, "New tab - [InPrivate] - Microsoft Edge", false));
+            Check("a drop on KeePass reads nothing", Watcher.ReadRefused(new AppInfo { Exe = "keepass.exe", Bundle = Apps.BundleFor("keepass.exe"), Private = Apps.IsPrivateExe("keepass.exe") }, "Passwords.kdbx - KeePass", false));
+            Check("a drop on the secure desktop reads nothing", Watcher.ReadRefused(edge, "Photosynthesis - Wikipedia - Microsoft Edge", true));
+            Check("a drop on an ordinary tab is read", !Watcher.ReadRefused(edge, "Photosynthesis - Wikipedia - Microsoft Edge", false));
 
             // Tab titles, as the Mac's window list says a browser window's
             var chrome = new AppInfo { Bundle = "com.google.Chrome" };
@@ -334,7 +340,92 @@ namespace Tutornote.Screen
                 long wholeMs = Clock.Ms - w0;
                 Check("a tap's words are read while a whole window is (tap " + tapMs + " ms, window " + wholeMs + " ms)", words != null && words.Count > 0);
             }
+
+            // No read waits for ever (a stuck read is simulated: Ocr.StallNextMs)
+            Check("a whole window's read answers inside main's 30 s, even read twice behind a stuck one",
+                2 * (Ocr.WHOLE_GATE_MS + Ocr.READ_MS) < 30000 && Ocr.TAP_READ_MS < Ocr.READ_MS);
+            if (Ocr.Engine() != null)
+            {
+                Picture small = Draw("Mitochondria turn glucose into energy", 900, 90);
+                var was = Ocr.Engine();
+                int retired = Ocr.Retired;
+                Ocr.StallNextMs = 150;
+                bool stuck = false;
+                long s0 = Clock.Ms;
+                try { Ocr.TryRead(small, 0, 0, 1, 1000, false); } catch (Ocr.StuckException) { stuck = true; }
+                long stuckMs = Clock.Ms - s0;
+                Check("a read stuck past its time is given up (" + stuckMs + " ms)", stuck && stuckMs < 1000);
+                Check("and its reader retired: the next read gets a new one", Ocr.Retired == retired + 1 && Ocr.Engine() != null && !ReferenceEquals(Ocr.Engine(), was));
+                List<OcrLine> after = Ocr.TryRead(small, 0, 0, 1, 0, false);
+                Check("which reads, the lock let go", after != null && after.Count > 0);
+
+                // (a whole window's read stuck on the shared reader: another waits a while, then gives up;
+                // a tap's words are read meanwhile on their own reader)
+                Ocr.StallNextMs = 1500;
+                var hung = new System.Threading.Thread(delegate () { try { Ocr.Read(small, 0, 0, 1); } catch (Ocr.StuckException) { } });
+                hung.Start();
+                System.Threading.Thread.Sleep(150);
+                long g0 = Clock.Ms;
+                List<OcrLine> behind = Ocr.TryRead(small, 0, 0, 1, 200, false);
+                long behindMs = Clock.Ms - g0;
+                Check("a whole window's read behind a stuck one gives up when its wait is over (" + behindMs + " ms)", behind == null && behindMs < 1000);
+                List<OcrLine> tapWords = Ocr.TryRead(small, 0, 0, 1, 120, true);
+                Check("a tap's words are read while the shared reader is stuck", tapWords != null && tapWords.Count > 0);
+                hung.Join();
+                Check("the stuck reader was retired too", Ocr.Retired == retired + 2);
+            }
+
+            // A finger's or a pen's press (TouchPoll), never a mouse's click said twice
+            var origin = new POINT(50, 60);
+            Check("a press Raw Input heard go down just then is the mouse's", TouchPoll.MouseOwns(1000, 980, false) && TouchPoll.MouseOwns(1000, 1040, false));
+            Check("so is one Raw Input holds down", TouchPoll.MouseOwns(1000, -1, true));
+            Check("a press long after the mouse's last is no mouse's", !TouchPoll.MouseOwns(6000, 1000, false) && !TouchPoll.MouseOwns(1000, -1, false));
+            int said = 0;
+            var mouse = new TouchPoll();
+            // (the poll saw the button before Raw Input's down came: then it came, and the click is the mouse's)
+            said += Count(mouse.Step(true, true, 1000, origin, -1, false));
+            said += Count(mouse.Step(true, false, 1010, origin, 1004, true));
+            for (long t = 1020; t < 1400; t += 10) said += Count(mouse.Step(true, false, t, origin, 1004, true));
+            said += Count(mouse.Step(false, false, 1400, origin, 1004, false));
+            said += Count(mouse.Step(false, false, 1410, origin, 1004, false));
+            Check("a mouse's held click is never said again by the poll", said == 0);
+            said = 0;
+            var quick = new TouchPoll();
+            said += Count(quick.Step(false, true, 2008, origin, 2000, false));
+            for (long t = 2018; t < 2200; t += 10) said += Count(quick.Step(false, false, t, origin, 2000, false));
+            Check("nor a quick one the poll saw only as pressed since", said == 0);
+
+            var finger = new TouchPoll();
+            TouchPoll.Act a0 = finger.Step(true, true, 3000, origin, 1004, false);
+            TouchPoll.Act a1 = finger.Step(true, false, 3030, new POINT(51, 60), 1004, false);
+            TouchPoll.Act a2 = finger.Step(true, false, 3060, new POINT(52, 61), 1004, false);
+            Check("a finger's press is said once no mouse's came in its time, where it went down",
+                Count(a0) == 0 && Count(a1) == 0 && a2.Down && !a2.Up && a2.Moving && a2.DownAt.X == 50 && a2.DownAt.Y == 60);
+            TouchPoll.Act a3 = finger.Step(true, false, 3070, new POINT(90, 61), 1004, false);
+            TouchPoll.Act a4 = finger.Step(false, false, 3200, new POINT(120, 62), 1004, false);
+            TouchPoll.Act a5 = finger.Step(false, false, 3210, new POINT(120, 62), 1004, false);
+            Check("its drag moves while held, and it comes up where it was let go, once",
+                a3.Moving && !a3.Down && !a3.Up && a4.Up && !a4.Down && a4.UpAt.X == 120 && Count(a5) == 0);
+            var tap = new TouchPoll();
+            TouchPoll.Act b0 = tap.Step(true, true, 4000, origin, -1, false);
+            TouchPoll.Act b1 = tap.Step(false, false, 4030, new POINT(51, 61), -1, false);
+            TouchPoll.Act b2 = tap.Step(false, false, 4060, new POINT(51, 61), -1, false);
+            Check("a tap quicker than the mouse's time is said down and up together",
+                Count(b0) == 0 && Count(b1) == 0 && b2.Down && b2.Up && b2.DownAt.X == 50 && b2.UpAt.X == 51);
+            var blip = new TouchPoll();
+            TouchPoll.Act c0 = blip.Step(false, true, 5000, origin, -1, false);
+            TouchPoll.Act c1 = blip.Step(false, false, 5060, origin, -1, false);
+            Check("a tap the poll saw only as pressed since is said too, at the one place",
+                Count(c0) == 0 && c1.Down && c1.Up && c1.DownAt.X == c1.UpAt.X);
+            var late = new TouchPoll();
+            late.Step(true, true, 6000, origin, -1, false);
+            TouchPoll.Act d1 = late.Step(true, false, 6020, origin, 6015, true);
+            TouchPoll.Act d2 = late.Step(true, false, 6080, origin, 6015, true);
+            TouchPoll.Act d3 = late.Step(false, false, 6200, origin, 6015, false);
+            Check("a mouse's down that came after the poll saw the press still owns it", Count(d1) + Count(d2) + Count(d3) == 0);
         }
+
+        static int Count(TouchPoll.Act a) { return (a.Down ? 1 : 0) + (a.Up ? 1 : 0); }
 
         static double Lerp(double[] a, double at)
         {

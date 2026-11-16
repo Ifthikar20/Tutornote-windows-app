@@ -318,7 +318,9 @@ async function onPick(win: BrowserWindow, clientX: number, clientY: number): Pro
         ? { kind: "error", text: "Screen Recording is off for Tutornote Screen Reader.", actions: ["settings", "retry"] }
         : code === "no_window"
           ? { kind: "error", text: "There was no window under that click. Try again on the page.", actions: ["again"] }
-          : { kind: "error", text: "The page couldn't be read just now.", actions: ["again"] },
+          : code === "private"
+            ? { kind: "error", text: "Tutornote doesn't read that window.", actions: ["again"] }
+            : { kind: "error", text: "The page couldn't be read just now.", actions: ["again"] },
     );
     return;
   }

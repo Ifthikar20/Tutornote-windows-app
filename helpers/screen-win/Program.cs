@@ -323,6 +323,11 @@ namespace Tutornote.Screen
                     Hit hit = Windows.At(p, skip, 0, null);
                     if (hit.Window == IntPtr.Zero) { Out.Error(id, "no_window"); return; }
                     h = hit.Window;
+                    // (a window found by a point, never hovered: whether it is private is said here,
+                    // as the watch says it of a window hovered. A blob dropped on a password manager,
+                    // a private browsing window or a remote desktop, or one under secure input, reads
+                    // nothing: companion.ts dropOn, explain.ts)
+                    if (Watcher.PointReadPrivate(h)) { Out.Error(id, "private"); return; }
                 }
                 bool fast = J.Str(cmd, "level") == "fast";
                 long tapHeldMs;
@@ -395,7 +400,11 @@ namespace Tutornote.Screen
             Picture read = pic;
             if (fast && HalvesGlance(pic.W, Win32.ScaleOf(h))) { read = Capture.Half(pic); scale = 2; }
             long t1 = Clock.Ms;
-            List<OcrLine> lines = Ocr.Read(read, frame.Left, frame.Top, scale);
+            // (the reader another whole window's read is using is waited for WHOLE_GATE_MS at the most,
+            // and a read stuck past READ_MS is given up: either answers capture_failed, never a wait for
+            // ever that holds every read after it)
+            List<OcrLine> lines = Ocr.TryRead(read, frame.Left, frame.Top, scale, Ocr.WHOLE_GATE_MS);
+            if (lines == null) { Out.Log("read: the text reader stayed busy " + Ocr.WHOLE_GATE_MS + " ms"); return null; }
             string level = fast ? "fast" : "accurate";
             long key = h.ToInt64();
             int known;
@@ -404,8 +413,8 @@ namespace Tutornote.Screen
             // a window that is not blank reads once more, in full.
             if (fast && scale > 1 && GlanceRereads(lines.Count, known, Diff.Blank(look)))
             {
-                lines = Ocr.Read(pic, frame.Left, frame.Top, 1);
-                level = "accurate";
+                List<OcrLine> full = Ocr.TryRead(pic, frame.Left, frame.Top, 1, Ocr.WHOLE_GATE_MS);
+                if (full != null) { lines = full; level = "accurate"; }
             }
             if (!fast)
                 lock (carefulLines)

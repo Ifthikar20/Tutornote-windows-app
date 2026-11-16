@@ -720,9 +720,37 @@ let chordAsk = false;
 const RESPAWN_MS = 1_000;
 const RESPAWNS_PER_MINUTE = 5;
 let respawns: number[] = [];
+/** Past RESPAWNS_PER_MINUTE with the companion on, the helper is started again after these waits
+ *  (the last one again and again) for as long as the companion stays on: the tutor never just
+ *  stops following until the next ask (the founder, 2026-11-15: "it gets really stuck"). */
+const BACKOFF_MS = [2_000, 4_000, 8_000, 16_000];
+let backoff = 0;
+let backoffTimer: NodeJS.Timeout | undefined;
+/** The helper is down for now (its restarts used up, waiting on a backoff): told as "helper"
+ *  ({up: false}) on watchEvents, and {up: true} once one started again has kept going UP_AFTER_MS.
+ *  The backoff is over only once it has kept going STABLE_AFTER_MS: a helper that starts, says a
+ *  few words and stops again (one window it fails on, under the resting cursor) keeps its backoff
+ *  growing, and the blob says "Reconnecting" throughout rather than flickering each time. */
+let helperDown = false;
+let helperSpoke = false;
+const UP_AFTER_MS = 3_000;
+const STABLE_AFTER_MS = 30_000;
+let upTimer: NodeJS.Timeout | undefined;
+let stableTimer: NodeJS.Timeout | undefined;
+
+/** Whether the helper is down for now, being started again with a backoff (helperGone). */
+export const screenHelperDown = (): boolean => helperDown;
+
+function setHelperDown(down: boolean): void {
+  if (helperDown === down) return;
+  helperDown = down;
+  watchEvents.emit("helper", { up: !down });
+}
 
 function helperGone(why: string): void {
   console.warn(`[screen] helper ${why}`);
+  clearTimeout(upTimer);
+  clearTimeout(stableTimer);
   for (const request of waiting.values()) {
     clearTimeout(request.timer);
     request.reject(new ScreenReadError("no_helper"));
@@ -730,11 +758,30 @@ function helperGone(why: string): void {
   waiting.clear();
   while (statusWaiters.length) statusWaiters.shift()?.(false);
   while (axWaiters.length) axWaiters.shift()?.(false);
-  if (!companionAsk?.on && !chordAsk) return;
+  if (!companionAsk?.on && !chordAsk) {
+    clearTimeout(backoffTimer);
+    backoff = 0;
+    setHelperDown(false);
+    return;
+  }
   const now = Date.now();
   respawns = respawns.filter((at) => now - at < 60_000);
   if (respawns.length >= RESPAWNS_PER_MINUTE) {
-    console.warn("[screen] the helper keeps stopping: the companion waits for the next ask");
+    // (with the companion on it is never given up: started again later and later; the chord alone
+    // waits for the next ask, as before)
+    if (!companionAsk?.on) {
+      console.warn("[screen] the helper keeps stopping: the talk chord waits for the next ask");
+      return;
+    }
+    const wait = BACKOFF_MS[Math.min(backoff, BACKOFF_MS.length - 1)];
+    backoff++;
+    console.warn(`[screen] the helper keeps stopping: started again in ${wait / 1000} s`);
+    setHelperDown(true);
+    clearTimeout(backoffTimer);
+    backoffTimer = setTimeout(() => {
+      if (!helper && companionAsk?.on) ensureHelper();
+    }, wait);
+    backoffTimer.unref();
     return;
   }
   respawns.push(now);
@@ -755,7 +802,26 @@ function ensureHelper(): Helper | null {
     return null;
   }
   helper = child;
-  readline.createInterface({ input: child.stdout }).on("line", onLine);
+  helperSpoke = false;
+  readline.createInterface({ input: child.stdout }).on("line", (line) => {
+    // (the first word from a helper started again: it is up once it has kept going a moment, and
+    // the backoff over once it has kept going a good while: helperGone stops both)
+    if (!helperSpoke && helper === child) {
+      helperSpoke = true;
+      clearTimeout(backoffTimer);
+      clearTimeout(upTimer);
+      clearTimeout(stableTimer);
+      upTimer = setTimeout(() => {
+        if (helper === child) setHelperDown(false);
+      }, UP_AFTER_MS);
+      upTimer.unref();
+      stableTimer = setTimeout(() => {
+        if (helper === child) backoff = 0;
+      }, STABLE_AFTER_MS);
+      stableTimer.unref();
+    }
+    onLine(line);
+  });
   readline.createInterface({ input: child.stderr }).on("line", (line) => console.warn(line));
   child.stdin.on("error", () => undefined);
   child.on("error", (e) => {

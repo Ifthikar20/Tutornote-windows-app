@@ -179,14 +179,21 @@ const screenTeachBridge = Object.freeze({
   /** A glance at a window ({window, read, ground, fast, keepCard?, tap?, empty?}): its lines, read on
    *  this Mac, for the pointer and for where a tap lands. `keepCard`: the new look of the card's own
    *  tap, so the card stays; `tap`: the careful read taken at that release, now the window's glance;
-   *  `empty`: no lines on a second look too (the window is blank now), so it replaces one with lines. */
+   *  `empty`: no lines on a second look too (the window is blank now), so it replaces one with lines.
+   *  `tapOnly` (with `tap`): that tap's careful read for its card alone, never the window's glance
+   *  (`stale`: the window moved since the tap; or no lines, or a later tap's read is the glance). */
   onGlance: (cb: unknown): (() => void) => listen("screen-teach:glance", cb),
+  /** A tap's own careful read, for its waiting card alone (never the window's glance). */
+  onTapRead: (cb: unknown): (() => void) => listen("screen-teach:tap-read", cb),
+  /** A drop of the blob on a window that explained nothing ({reason}: private, empty, failed). */
+  onCompanionDropFailed: (cb: unknown): (() => void) => listen("screen-teach:companion-drop-failed", cb),
   /** What the cursor is over ({window | null, own?, private?, reading?}). */
   onOver: (cb: unknown): (() => void) => listen("screen-teach:over", cb),
   /** The button went down on another app's window ({window, x, y}), before anything is judged. */
   onPress: (cb: unknown): (() => void) => listen("screen-teach:press", cb),
-  /** A tap on another app's window that did nothing there ({window, x, y, id?}): the card is
-   *  offered (`id`: the release it was opened for at once, if it was). */
+  /** A tap on another app's window that did nothing there ({window, x, y, id?, explain?}): the card
+   *  is offered (`id`: the release it was opened for at once, if it was). `explain`: a double tap in
+   *  a browser, a reader or a PDF viewer: explain from there at once (explainAt with this `tap`). */
   onCompanionTap: (cb: unknown): (() => void) => listen("screen-teach:companion-tap", cb),
   /** A tap just ended on another app's window, before it is judged ({id, window, x, y, alt, hand,
    *  clicks, lesson, run?, private?}): the page may paint the card in this frame. `hand`: the
@@ -313,6 +320,10 @@ const screenTeachBridge = Object.freeze({
   companionHold: (held: unknown): void => ipcRenderer.send("screen-teach:companion-hold", held === true),
   /** The page shows a dock of its own while the companion is on (true), or no longer (false). */
   companionDock: (on: unknown): void => ipcRenderer.send("screen-teach:companion-dock", on === true),
+  /** The page broke (its error boundary caught a failure): the desktop app loads it again, or
+   *  makes its window anew, with the companion on. `why`: a short reason for the app's log (only a
+   *  string, 80 characters at the most, is sent). */
+  pageFailed: (why?: unknown): void => ipcRenderer.send("screen-teach:page-failed", typeof why === "string" ? why.slice(0, 80) : ""),
   /** A tap in a reader that the app used ({window, app, x, y}). No longer sent (the helper now
    *  reads the tapped words, so a tap on a reader's words is the tutor's): kept for a page that
    *  still listens. */

@@ -3,12 +3,14 @@ import { mkdir, readdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   BLOB_SIZE,
+  blobDrop,
   blobUp,
   choiceOf,
   circleAsked,
   clampBlobPlace,
-  CLICK_TRAVEL,
   defaultBlobPlace,
+  EXPLAIN_AGAIN_MS,
+  explainsNow,
   isEditorApp,
   isPrivateApp,
   labelBounds,
@@ -17,6 +19,7 @@ import {
   PRIVATE_APPS,
   READER_APPS,
   selectionKept,
+  tapActed,
   tapNumbers,
   tapOnWords,
   tapRoute,
@@ -34,7 +37,9 @@ import {
   hideFromCapture,
   observeWindows,
   readWindow,
+  readWindowAt,
   restartScreenHelper,
+  screenHelperDown,
   screenReadingAvailable,
   ScreenReadError,
   watchEvents,
@@ -66,6 +71,7 @@ import {
   overlayInteractive,
   overlayWindow,
   pressWasThePage,
+  reviveCompanionPage,
   screenPoint,
   screenTeachLesson,
   sendToPage,
@@ -147,11 +153,24 @@ const ROW_CHARS = 300;
 const BLOB_HANDOFF_MS = 180;
 /** and fades out in this long (blob.html's hidden look) before its window hides. */
 const BLOB_FADE_MS = 120;
+/** A pick (or a drop) waits this long at the most for its window's careful read, then says it
+ *  failed: the card offers its pick again, rather than waiting on a read that never comes. */
+const PICK_READ_MS = 8_000;
+/** The blob's flight back to where it lives after it was dropped on a window to explain. */
+const BLOB_HOME_MS = 260;
+/** How often the cursor is looked at while the tutor is on, for a display it went to with no
+ *  window under it said (followDisplay): over the desktop, the menu bar, by a touch. */
+const DISPLAY_WATCH_MS = 250;
+/** The page said its dock went (companion-dock false) and has not said it again this long after,
+ *  with no load of its own: it has broken (an error took it down), and is loaded again. */
+const DOCK_GONE_MS = 1_500;
 
 const LABELS = {
   resting: "Click to turn me on",
   on: "Click to stop",
   blocked: "Tutornote needs Screen Recording. Click to fix.",
+  // (the tutor on, and the screen helper keeps stopping: it is being started again, BACKOFF_MS)
+  reconnecting: "Reconnecting to the screen…",
   // (no screen helper in this build, or a Mac older than macOS 14: Screen Recording is not it)
   unavailable: process.platform === "win32" ? "Tutornote can't read other apps on this computer." : "Tutornote can't read other apps on this Mac.",
 } as const;
@@ -164,6 +183,13 @@ let blobAt: Point | null = null;
 /** Its label shows on this side (the window is wider then), or not at all. */
 let labelSide: "left" | "right" | null = null;
 let drag: { grab: Point; start: Point; travel: number; timer: NodeJS.Timeout; safety: NodeJS.Timeout } | null = null;
+/** The blob was dropped on a window and that window is being read (dropOn): no new drag till then. */
+let dropping = false;
+/** The blob flying home after a drop (flyBlobHome). */
+let blobFlight: NodeJS.Timeout | undefined;
+/** The cursor looked at while the tutor is on (DISPLAY_WATCH_MS), and a broken page's dock (DOCK_GONE_MS). */
+let displayWatch: NodeJS.Timeout | undefined;
+let dockGone: NodeJS.Timeout | undefined;
 
 /** The tutor is on: it follows the cursor. */
 let on = false;
@@ -242,6 +268,9 @@ const CAREFUL_KEPT = 4;
 const windowMoved = new Map<number, number>();
 /** The tap that last opened a card: its window, and when. */
 let cardTap: { window: number; at: number } | null = null;
+/** The last double tap explained at once (onTap): a tap on its window soon after is the same one's
+ *  third click, or the Mac's late verdict on its first, and is not explained (nor carded) again. */
+let explainedNow: { window: number; at: number } | null = null;
 /** The latest releases heard, by id (a few): what a tap's recording says of its clicks and cursor,
  *  when it was heard (`at`, Date.now()), and whether its press was on the page's own controls
  *  (`page`, decided at the release and kept for its verdict). */
@@ -277,7 +306,10 @@ type BlobLook = "resting" | "on" | "reading" | "blocked" | "hidden";
 
 function blobLook(): BlobLook {
   if (blobGoing) return "hidden";
-  if (on) return inFlight.size > 0 ? "reading" : "on";
+  // (the screen helper down while on, being started again: its "!" until the helper is back)
+  if (on && screenHelperDown()) return "blocked";
+  if (on) return inFlight.size > 0 || dropping ? "reading" : "on";
+  if (dropping) return "reading";
   return blocked ? "blocked" : "resting";
 }
 
@@ -288,9 +320,11 @@ function tellBlob(extra: { pop?: boolean } = {}, look: BlobLook = blobLook()): v
   const label =
     look === "on" || look === "reading" || look === "hidden"
       ? LABELS.on
-      : look === "blocked" && blockedBy === "unavailable"
-        ? LABELS.unavailable
-        : LABELS[look];
+      : look === "blocked" && on
+        ? LABELS.reconnecting
+        : look === "blocked" && blockedBy === "unavailable"
+          ? LABELS.unavailable
+          : LABELS[look];
   const send = (): void => b.webContents.send("blob:state", { look, label, side: labelSide, ...extra });
   if (b.webContents.isLoading()) b.webContents.once("did-finish-load", send);
   else send();
@@ -329,7 +363,7 @@ function tellToolbar(): void {
 
 /** Whether the blob's window is to be up now (companionPlace.ts blobUp). */
 function blobWanted(): boolean {
-  return blobUp({ shown: blobShown, on, pageDock });
+  return blobUp({ shown: blobShown, on, pageDock, attention: on && screenHelperDown() });
 }
 
 /** The blob's window up or not, as blobWanted says, once its page has loaded (showBlob shows it
@@ -502,7 +536,9 @@ function onHover(hover: boolean): void {
 */
 function startDrag(): void {
   const b = liveBlob();
-  if (!b || !blobAt || drag) return;
+  if (!b || !blobAt || drag || dropping) return;
+  clearInterval(blobFlight);
+  blobFlight = undefined;
   if (labelSide) {
     labelSide = null;
     placeBlob();
@@ -523,8 +559,10 @@ function startDrag(): void {
   drag = { grab, start, travel: 0, timer, safety };
 }
 
-/** The drag is over: a click (`asClick`, hardly moved) turns the tutor on or off; a drag leaves the
- *  blob on the display it was dropped on, whole on its work area, and is kept for next time. */
+/** The drag is over (companionPlace.ts blobDrop): a click (`asClick`, hardly moved) turns the tutor
+ *  on or off; a short drag, or one let go of at the screen's edge, leaves the blob on the display it
+ *  was dropped on, whole on its work area, and is kept for next time; one let go of anywhere else
+ *  reads the window it was dropped on and explains from there (dropOn), the blob flying back home. */
 function endDrag(asClick: boolean): void {
   const ended = drag;
   if (!ended) return;
@@ -532,7 +570,9 @@ function endDrag(asClick: boolean): void {
   clearInterval(ended.timer);
   clearTimeout(ended.safety);
   if (!blobAt) return;
-  if (asClick && ended.travel < CLICK_TRAVEL) {
+  const at = screen.getCursorScreenPoint();
+  const what = blobDrop({ travel: ended.travel, asClick, at, work: screen.getDisplayNearestPoint(at).workArea });
+  if (what === "click") {
     blobAt = ended.start;
     placeBlob();
     toggle();
@@ -541,7 +581,160 @@ function endDrag(asClick: boolean): void {
   const display = screen.getDisplayNearestPoint(blobCentre());
   blobAt = clampBlobPlace(blobAt, display.workArea);
   placeBlob();
+  // (not on Tutornote's own window, nor with the blob showing it cannot read: only moved there)
+  if (what === "read" && !blocked && screenReadingAvailable() && !overOwnWindow(at)) {
+    void dropOn(at, ended.start);
+    return;
+  }
   saveBlobPlace(display.id, blobAt);
+}
+
+/** Whether `p` (screen points) is over one of Tutornote's own windows that shows something and is
+ *  in front there (the board's or the explain panel's, which float over every app, or the main
+ *  window while it is the one in front, focused): a drop there only moves the blob. Not one behind
+ *  the app the student dropped on (the main window kept open behind a browser, the usual way),
+ *  nor the blob's, nor the lesson's see-through window, which covers the display and lets every
+ *  click through. */
+function overOwnWindow(p: Point): boolean {
+  const lessonWindow = overlayWindow();
+  const own = [...BrowserWindow.getAllWindows(), boardWindow()];
+  return own.some((w) => {
+    if (!w || w.isDestroyed() || w === liveBlob() || w === lessonWindow || !w.isVisible() || w.isMinimized()) return false;
+    if (!w.isFocused() && !w.isAlwaysOnTop()) return false;
+    const b = w.getBounds();
+    return p.x >= b.x && p.y >= b.y && p.x < b.x + b.width && p.y < b.y + b.height;
+  });
+}
+
+/** The blob flies back to `home` (its top left, screen points), where it lives, after a drop: the
+ *  place it was dropped at is not kept. */
+function flyBlobHome(home: Point): void {
+  clearInterval(blobFlight);
+  blobFlight = undefined;
+  const b = liveBlob();
+  if (!b || !blobAt || drag) return;
+  const from = { ...blobAt };
+  if (!b.isVisible()) {
+    blobAt = { ...home };
+    placeBlob();
+    return;
+  }
+  const began = Date.now();
+  blobFlight = setInterval(() => {
+    if (drag || !blobAt) {
+      clearInterval(blobFlight);
+      blobFlight = undefined;
+      return;
+    }
+    const t = Math.min(1, (Date.now() - began) / BLOB_HOME_MS);
+    // (eased out: quick off the window, settling as it lands)
+    const k = 1 - (1 - t) * (1 - t);
+    blobAt = { x: Math.round(from.x + (home.x - from.x) * k), y: Math.round(from.y + (home.y - from.y) * k) };
+    placeBlob();
+    if (t >= 1) {
+      clearInterval(blobFlight);
+      blobFlight = undefined;
+    }
+  }, FRAME_MS);
+}
+
+/**
+ * The blob was dropped at `at` (screen points) on another app's window: the tutor goes on (if it was
+ * off), reads the window there and explains from that point, as a card's Explain does (explainAt),
+ * and the blob flies back to `home`. The drop is the student pointing at that window, so it is kept
+ * as a drag of theirs (lifts): the page may read and picture it as it may a ring's (circleAsked),
+ * and pick it (pickAsked). A private window, one under secure input, one with no words, or a read
+ * that fails or never comes (PICK_READ_MS) explains nothing, and the page says so for a moment
+ * (screen-teach:companion-drop-failed): a drop never just does nothing.
+ * Whether the window is private is the helper's to say as it reads (a point read of a private
+ * app's window, a private browsing window or one under secure input answers "private"): the
+ * cursor was over the blob all the drag, so the window under it was never hovered and said of.
+ */
+async function dropOn(at: Point, home: Point): Promise<void> {
+  dropping = true;
+  tellBlob();
+  const failed = (reason: "private" | "empty" | "failed"): void => {
+    if (on) sendToPage("screen-teach:companion-drop-failed", { reason });
+  };
+  try {
+    if (!on) await turnOn();
+    if (!on) return;
+    // (the student's drop is a Play: the tutor was paused from the dock of a page with no blob of its own)
+    if (held) setHeld(false);
+    // (secure input: a password field has the keys. Said with every over, the blob's own too)
+    if (hovered?.secure) {
+      console.log("[companion] dropped with secure input on: nothing read");
+      return failed("private");
+    }
+    const known = hovered && !hovered.own && hovered.window !== null && frameHas(hovered.frame, at) ? hovered : null;
+    if (known && (privateWindows.has(known.window as number) || isPrivateApp(known.bundle))) {
+      console.log("[companion] dropped on a private window: nothing read");
+      return failed("private");
+    }
+    let read: ScreenRead;
+    try {
+      read = await within(readWindowAt(at.x, at.y, [process.pid]), PICK_READ_MS);
+    } catch (e) {
+      const code = errorCode(e);
+      console.warn(`[companion] read for the drop failed: ${code}`);
+      if (code === "no_permission") screenRecordingLost();
+      return failed(code === "private" ? "private" : "failed");
+    }
+    if (!on || held) return;
+    if (isPrivateApp(read.bundle) || privateWindows.has(read.window)) {
+      privateWindows.add(read.window);
+      console.log(`[companion] dropped on a private window (${read.bundle || read.app}): nothing read`);
+      return failed("private");
+    }
+    if (!read.lines.length) {
+      console.log(`[companion] dropped on ${read.app}: no words there, nothing to explain`);
+      return failed("empty");
+    }
+    if (windowApps.size >= WINDOWS_KEPT) windowApps.clear();
+    windowApps.set(read.window, { app: read.app, bundle: read.bundle, title: read.title });
+    // (the student's own pointing at that window: what the page may read, picture and pick there)
+    lifts = [...lifts, liftOf({ x: at.x, y: at.y, window: read.window, points: [] }, Date.now())].slice(-LIFTS_KEPT);
+    const kept: Glance = { read, at: Date.now(), stale: false };
+    glances.set(read.window, kept);
+    pendingRead = { id: null, window: read.window, read: Promise.resolve(read), at: Date.now(), stale: false, done: true };
+    // (the lesson's window over the display of the window it teaches, as for a pick)
+    const display = screen.getDisplayMatching({
+      x: Math.round(read.frame.x),
+      y: Math.round(read.frame.y),
+      width: Math.max(1, Math.round(read.frame.w)),
+      height: Math.max(1, Math.round(read.frame.h)),
+    });
+    const area = overlayArea(display, read.frame);
+    if (!sameArea(companionArea(), area)) moveTo(area);
+    sendGlance(read.window, kept);
+    console.log(`[companion] dropped on ${read.app}: ${read.lines.length} lines, explaining from there`);
+    void openScreenTeach(read, at, { choice: "explain", quiet: greeted, companion: true, drop: true });
+    greeted = true;
+  } finally {
+    dropping = false;
+    flyBlobHome(home);
+    tellBlob();
+  }
+}
+
+const frameHas = (f: { x: number; y: number; w: number; h: number } | null | undefined, p: Point): boolean =>
+  Boolean(f && p.x >= f.x && p.y >= f.y && p.x < f.x + f.w && p.y < f.y + f.h);
+
+/** `p`, or a ScreenReadError "timeout" once `ms` have passed with no answer. */
+function within<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new ScreenReadError("timeout")), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e: unknown) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
 }
 
 function showMenu(): void {
@@ -634,6 +827,7 @@ async function turnOn(): Promise<void> {
     stopKey = "";
     observeKey = "";
     sendStop(true);
+    watchDisplay(true);
     tellBlob();
     // The tutor hops out; the blob goes once it has, and the page's dock is the control (a page
     // with none keeps the blob up as a ring).
@@ -760,6 +954,8 @@ function clearCaches(): void {
   stopKey = "";
   observeKey = "";
   feedCursor(false);
+  watchDisplay(false);
+  clearTimeout(dockGone);
 }
 
 // MARK: hover and glances
@@ -781,6 +977,21 @@ function followDisplay(): void {
   moveTo(want ?? display.workArea);
 }
 
+/** While the tutor is on, the cursor is looked at every DISPLAY_WATCH_MS: gone off the area the
+ *  window covers (to another display over the desktop, its menu bar, or by a touch, where the helper
+ *  says no new window under it), the window follows it there (followDisplay). */
+function watchDisplay(run: boolean): void {
+  clearInterval(displayWatch);
+  displayWatch = undefined;
+  if (!run) return;
+  displayWatch = setInterval(() => {
+    const area = companionArea();
+    if (!on || held || drag || !area || screenTeachLesson()) return;
+    const p = screen.getCursorScreenPoint();
+    if (p.x < area.x || p.y < area.y || p.x >= area.x + area.width || p.y >= area.y + area.height) followDisplay();
+  }, DISPLAY_WATCH_MS);
+}
+
 function moveTo(area: Rectangle): void {
   moveCompanionOverlay(area);
   pageHas.clear();
@@ -795,11 +1006,20 @@ function moveTo(area: Rectangle): void {
  *  and the page lets it replace a glance with lines (one with no lines otherwise never does). Never
  *  the page's drawing (paper, rules, ink), even from an accurate read: the lesson's own reads carry
  *  it (screenRead.ts withoutDrawing). */
-function sendGlance(window: number, glance: Glance, keepCard = false, tap?: number, empty = false): void {
+function sendGlance(
+  window: number,
+  glance: Glance,
+  keepCard = false,
+  tap?: number,
+  empty = false,
+  only?: { tapOnly: true; stale: boolean },
+): void {
   const local = localRead(glance.read);
   if (!local) return;
   const read = withoutDrawing(local);
-  sendToPage("screen-teach:glance", {
+  // (a tap's own read for its card alone goes on a channel of its own: a page too old to know it
+  // would take it as the window's newest glance, an older or stale read over a newer one)
+  sendToPage(only ? "screen-teach:tap-read" : "screen-teach:glance", {
     window,
     read,
     ground: glance.read.ground ?? 1,
@@ -807,7 +1027,10 @@ function sendGlance(window: number, glance: Glance, keepCard = false, tap?: numb
     ...(keepCard ? { keepCard: true } : {}),
     ...(tap !== undefined ? { tap } : {}),
     ...(empty ? { empty: true } : {}),
+    // (the tap's own read, for its card alone: not the window's glance, stale or with no words)
+    ...(only ? { tapOnly: true, ...(only.stale ? { stale: true } : {}) } : {}),
   });
+  if (only) return;
   pageHas.add(window);
   glancedLast = [...glancedLast.filter((w) => w !== window), window].slice(-GLANCED_KEPT);
 }
@@ -992,8 +1215,8 @@ function onPress(press: ScreenPress): void {
   which time the cursor may well be over a card painted at this release.
   The careful read starts now (startCarefulRead), so the lesson's words are ready by the time the
   student picks: for every card, and on the lesson's window for a tap off the words it has read.
-  Not for a double click: its verdict takes any card away (but in a reader, selectionKept), and its
-  first click's read is on its way.
+  For a double tap too (its first click's read, still on its way, is its own: startCarefulRead): in
+  a browser, a reader or a PDF viewer it is explained at once (onTap, explainsNow), from that read.
 */
 function onRelease(release: ScreenRelease): void {
   if (!on || held) return;
@@ -1028,7 +1251,10 @@ function onRelease(release: ScreenRelease): void {
     ...(route === "lesson" && lessonNow ? { run: lessonNow.run } : {}),
     ...(route === "private" ? { private: true } : {}),
   });
-  if (route === "private" || release.clicks >= 2) return;
+  if (route === "private") return;
+  // (a second or third click is read for only where it may be explained at once, onTap: anywhere
+  // else its selection is its app's, and a whole careful read of the window would go for nothing)
+  if (release.clicks >= 2 && !explainsNow({ clicks: release.clicks, bundle: info?.bundle, hand: release.hand })) return;
   // (on the lesson's words, the lesson has its read)
   if (route === "lesson" && tapOnWords(glances.get(release.window)?.read.lines ?? [], release)) return;
   startCarefulRead(release.id, release.window);
@@ -1058,20 +1284,24 @@ function startCarefulRead(id: number | null, window: number): void {
   read.then(
     (r) => {
       mine.done = true;
-      if (pendingRead !== mine || !on || held) return;
+      if (!on || held) return;
       if (isPrivateApp(r.bundle)) {
         privateWindows.add(window);
         return;
       }
       const waited = r.heldMs ? `, held ${r.heldMs} ms for a tap being judged` : "";
-      if (mine.stale) {
-        console.log(`[companion] careful read for the tap: the window moved meanwhile, kept for its pick only${waited}`);
-        return;
-      }
-      if (!r.lines.length && glances.get(window)?.read.lines.length) {
-        console.log("[companion] careful read for the tap: 0 lines, kept the last glance");
-        return;
-      }
+      // Not the window's glance (another tap's read is the latest, the window moved meanwhile, or no
+      // words over a glance with some): the page still has it for its tap's card alone (tapOnly),
+      // which would otherwise wait for it for ever.
+      const forTap = mine.id;
+      const tapOnly = (why: string): void => {
+        if (forTap === null) return;
+        console.log(`[companion] careful read for the tap: ${why}${waited}`);
+        sendGlance(window, { read: r, at: Date.now(), stale: mine.stale }, true, forTap, false, { tapOnly: true, stale: mine.stale });
+      };
+      if (pendingRead !== mine) return tapOnly("a later tap's read is the window's now, sent for its card only");
+      if (mine.stale) return tapOnly("the window moved meanwhile, kept for its pick, sent for its card only");
+      if (!r.lines.length && glances.get(window)?.read.lines.length) return tapOnly("0 lines, kept the last glance, sent for its card only");
       const kept: Glance = { read: r, at: Date.now(), stale: false };
       glances.set(window, kept);
       sendGlance(window, kept, true, id ?? undefined);
@@ -1090,10 +1320,11 @@ function startCarefulRead(id: number | null, window: number): void {
   something in its app, with what the words at the tap said (tapNumbers). One its app used (a link,
   a button, a page turn, a menu; "acted") or a double click (words selected; "select"): a card the
   page opened at the release goes at once (companion-withdraw), and the careful read taken for it
-  with it. An Option click is always the tutor's, but for a double click. A double click in a
-  reader, or on a PDF in a browser (companionPlace.ts selectionKept), is the student pointing at a
-  word, not the app's: its card stays (or opens there) and its careful read is kept, the window's
-  title being the one known for it (the glance's, as recordTap's, else the cursor's last over).
+  with it. An Option click is always the tutor's, but for a double click. A double click anywhere
+  but an editor (companionPlace.ts selectionKept), and a click that only put a caret in a browser
+  or a reader (caretKept), is the student pointing at a word, not the app's: its card stays (or
+  opens there) and its careful read is kept. A double tap in a browser, a reader or a PDF viewer
+  (explainsNow) is explained at once: the page hears it with `explain`, and starts the lesson.
   Otherwise, where a card is wanted, the page hears the tap again (companion-tap, the release's
   id), to open the card now if
   it waited for this (a margin, a pointing hand). Whether the click was on the page's own controls
@@ -1106,35 +1337,63 @@ function onTap(tap: ScreenTap): void {
   const info = windowApps.get(tap.window);
   const heard = tap.id !== undefined ? releases.get(tap.id) : undefined;
   const page = heard ? heard.page : pressWasThePage() || overlayInteractive();
-  // (a selection in a reader is no doing of its app's: it goes as a tap that did nothing there)
-  const kept = selectionKept({ words: tap.words, bundle: info?.bundle, title: glances.get(tap.window)?.read.title || info?.title });
+  // (a selection anywhere but an editor, or a caret in a browser or a reader, is no doing of its
+  // app's: it goes as a tap that did nothing there)
+  const title = glances.get(tap.window)?.read.title || info?.title;
+  const hand = heard?.hand === true;
+  const kept = selectionKept({ words: tap.words, bundle: info?.bundle, title, hand });
+  const acted = tapActed({ acted: tap.acted, words: tap.words, bundle: info?.bundle, title, hand });
   const route = tapRoute({
     onLesson: !page && tap.window === screenTeachLesson()?.window,
     onPage: page,
     private: privateWindows.has(tap.window) || isPrivateApp(info?.bundle),
-    acted: tap.acted && !kept,
+    acted,
     editor: isEditorApp(info?.bundle),
     alt: tap.alt,
   });
   if (route !== "private" && route !== "page") recordTap(tap, info);
-  if (kept && route === "card") {
-    console.log(`[companion] tap in ${info?.app || "another app"}: ${tap.words}${tapNumbers(tap)} (selection in a reader: kept)`);
+  if (route === "card" && tap.acted && !acted) {
+    console.log(`[companion] tap in ${info?.app || "another app"}: ${tap.words}${tapNumbers(tap)} (the student's ${kept ? "selection" : "caret"}: kept)`);
   }
   if (route === "acted" || (route === "card" && tap.words === "select" && !kept)) {
     console.log(`[companion] tap acted in ${info?.app || "another app"}${tap.words ? `: ${tap.words}` : ""}${tapNumbers(tap)}`);
     if (tap.id !== undefined) {
       sendToPage("screen-teach:companion-withdraw", { id: tap.id, why: tap.words ?? "acted", window: tap.window });
+      // (its read is no tap's now: nothing of it goes to the page, startCarefulRead)
+      const taken = carefulReads.get(tap.id);
+      if (taken) taken.id = null;
       if (pendingRead?.id === tap.id) pendingRead = null;
       carefulReads.delete(tap.id);
     }
     return;
   }
   if (route !== "card") return;
+  // (the same double tap's third click, or the Mac's later verdict on its first: it is being explained)
+  if (explainedNow && explainedNow.window === tap.window && Date.now() - explainedNow.at < EXPLAIN_AGAIN_MS) {
+    console.log(`[companion] tap in ${info?.app || "another app"}: part of the double tap being explained`);
+    return;
+  }
   const local = localPoint(tap);
   if (!local) return;
-  sendToPage("screen-teach:companion-tap", { window: tap.window, x: local.x, y: local.y, ...(tap.id !== undefined ? { id: tap.id } : {}) });
+  // A double tap in a browser, a reader or a PDF viewer, on the words the window's glance has (not a
+  // tab strip, a title bar, a field, nor under a pointing hand): explained at once (`explain`: the
+  // page starts the lesson from this tap, with no card to pick from), from the read its first click
+  // began. Off the words it is an ordinary tap, its card offered as for a single one.
+  const glance = glances.get(tap.window);
+  const onWords = Boolean(glance && !glance.stale && tapOnWords(glance.read.lines, tap));
+  const now = tap.id !== undefined && onWords && explainsNow({ clicks: heard?.clicks, bundle: info?.bundle, hand });
+  if (now) explainedNow = { window: tap.window, at: Date.now() };
+  sendToPage("screen-teach:companion-tap", {
+    window: tap.window,
+    x: local.x,
+    y: local.y,
+    ...(tap.id !== undefined ? { id: tap.id } : {}),
+    ...(now ? { explain: true } : {}),
+  });
   cardTap = { window: tap.window, at: Date.now() };
+  if (now) console.log(`[companion] double tap in ${info?.app || "another app"}: explained now`);
   if (tap.id === undefined) startCarefulRead(null, tap.window);
+  else if (!carefulReads.has(tap.id)) startCarefulRead(tap.id, tap.window);
 }
 
 /*
@@ -1460,7 +1719,9 @@ async function explainAt(value: unknown): Promise<ExplainAnswer> {
   const asked = Date.now();
   let read: ScreenRead;
   try {
-    read = kept ? await kept.read : await readWindow(window);
+    // (PICK_READ_MS at the most: a read that never comes is said as failed, and the card offers
+    // its pick again)
+    read = await within(kept ? kept.read : readWindow(window), PICK_READ_MS);
   } catch (e) {
     if (kept && pendingRead === kept) pendingRead = null;
     if (tap !== undefined) carefulReads.delete(tap);
@@ -1597,8 +1858,10 @@ const fromBlob = (event: IpcMainEvent): boolean => {
   return Boolean(b && event.sender === b.webContents);
 };
 
-/** The lesson pages that have said they have a dock or a hold, each heard of once. */
+/** The lesson pages that have said they have a dock or a hold, each heard of once, with how many
+ *  loads each has had since (a dock gone with no load since is a page that broke: DOCK_GONE_MS). */
 const pagesHeard = new WeakSet<WebContents>();
+const pageLoads = new WeakMap<WebContents, number>();
 
 /** A page loaded afresh (a reload) knows no dock and no hold until it says so: the blob is back
  *  while on until it does, and the tutor plays on. Not on companion-state, which the page also
@@ -1607,6 +1870,7 @@ function hearPage(contents: WebContents): void {
   if (pagesHeard.has(contents)) return;
   pagesHeard.add(contents);
   contents.on("did-navigate", () => {
+    pageLoads.set(contents, (pageLoads.get(contents) ?? 0) + 1);
     pageDock = false;
     syncBlobWindow();
     if (held) setHeld(false);
@@ -1628,6 +1892,12 @@ export function installCompanion(): void {
   watchEvents.on("lift", onLift);
   // (another document in a window it knows, while a lesson watches one)
   watchEvents.on("ident", onIdent);
+  // (the screen helper keeps stopping, and is started again later and later, or is back: the blob
+  // is up with its "!" meanwhile, the page's dock or not: screen.ts BACKOFF_MS)
+  watchEvents.on("helper", () => {
+    syncBlobWindow();
+    tellBlob();
+  });
   appEvents.on("screen-teach-read", onLessonRead);
   // (and its window moved: its glance with it)
   appEvents.on("screen-teach-window-moved", onLessonMoved);
@@ -1752,6 +2022,16 @@ export function installCompanion(): void {
     hearPage(event.sender);
     pageDock = value === true;
     syncBlobWindow();
+    // The dock went, and the page neither loaded again nor says it has one a moment later: it broke
+    // (its companion part came down), and is loaded again (screenTeach.ts reviveCompanionPage).
+    clearTimeout(dockGone);
+    if (value === true || !on) return;
+    const sender = event.sender;
+    const loads = pageLoads.get(sender) ?? 0;
+    dockGone = setTimeout(() => {
+      if (!on || pageDock || sender.isDestroyed() || sender.isLoading() || (pageLoads.get(sender) ?? 0) !== loads) return;
+      reviveCompanionPage("its dock went and never came back");
+    }, DOCK_GONE_MS);
   });
 
   app.on("will-quit", () => {
