@@ -166,6 +166,22 @@ export const EDITOR_APPS: ReadonlySet<string> = new Set([
 export const EDITOR_PREFIXES: readonly string[] = ["com.jetbrains."];
 
 /*
+  The editors of passages, where a double tap on a sentence is the student pointing at it and its
+  card asks whether to explain it (pointedInto; the founder, 2026-11-17: "when we double tap on any
+  passage or sentence we should see the menu asking if want me to explain this"). A plain click
+  there stays the editor's. Not Finder, terminals, spreadsheets, slides or code editors, where a
+  double click opens a file, edits a cell or a shape, or picks a word to change.
+*/
+export const WRITING_APPS: ReadonlySet<string> = new Set([
+  "com.apple.Notes",
+  "com.apple.TextEdit",
+  "com.apple.iWork.Pages",
+  "com.microsoft.Word",
+  "notion.id",
+  "md.obsidian",
+]);
+
+/*
   Readers: Kindle (both its bundle ids), Books and Preview. A plain click on their page can show or
   hide their own bars, so the helper judges a tap there against a look it has vetted first
   (main.swift judgeTap, "readers" with "companion").
@@ -173,8 +189,8 @@ export const EDITOR_PREFIXES: readonly string[] = ["com.jetbrains."];
 export const READER_APPS: ReadonlySet<string> = new Set(["com.amazon.Lassen", "com.amazon.Kindle", "com.apple.iBooksX", "com.apple.Preview"]);
 
 /*
-  Browsers, where a double tap is the student's and explained at once (selectionKept,
-  explainsNow), and a caret in a PDF too (caretKept): Chrome and Edge in any of their channels (by
+  Browsers, where a double tap is the student's and its card asks whether to explain (selectionKept,
+  doubleTapPoints), and a caret in a PDF too (caretKept): Chrome and Edge in any of their channels (by
   their bundle's prefix, BROWSER_PREFIXES), Safari, Firefox, Arc, Brave, Opera, Vivaldi, Orion.
 */
 export const BROWSER_APPS: ReadonlySet<string> = new Set([
@@ -199,10 +215,11 @@ export const isReaderApp = (bundle: string | undefined): boolean => Boolean(bund
 export const isBrowserApp = (bundle: string | undefined): boolean =>
   Boolean(bundle && (BROWSER_APPS.has(bundle) || BROWSER_PREFIXES.some((prefix) => bundle.startsWith(prefix))));
 
-/** Whether a browser's or a reader's window (a PDF viewer's too: READER_APPS) is the student's to
- *  point into: a double tap there is the student's (selectionKept), and explained at once
- *  (explainsNow). Never an editor's. */
-const pointedInto = (bundle: string | undefined): boolean => (isBrowserApp(bundle) || isReaderApp(bundle)) && !isEditorApp(bundle);
+/** Whether a window of words is the student's to point into with a double tap: a browser's, a
+ *  reader's (a PDF viewer's too: READER_APPS) or a writing app's (WRITING_APPS, since 2026-11-17;
+ *  selectionKept, doubleTapPoints). A single click in a writing app stays the editor's (tapRoute). */
+const pointedInto = (bundle: string | undefined): boolean =>
+  isBrowserApp(bundle) || isReaderApp(bundle) || Boolean(bundle && WRITING_APPS.has(bundle));
 
 /** A browser's window showing a PDF, as its title says (ending in ".pdf"). Edge shows a PDF's own
  *  title when it has one, so such a PDF is not told by this, and is a web page here. */
@@ -212,14 +229,13 @@ const browserPdf = (bundle: string | undefined, title: string | undefined): bool
 /**
  * Whether a tap whose only doing was selecting words (`words` "select": a double click, or the
  * single tap a double click followed, whose verdict says so too) was the student's, not its app's:
- * in a browser or a reader (READER_APPS: Kindle, Books, Preview; a browser's PDF too), where a
- * student double clicks a word to point at it (9 of the founder's 20 recorded taps were second or
- * third clicks; 2026-11-15: "whenever you tap on some PDF or web page, it should understand it"),
- * and the card stays, or the lesson goes there. Not under a pointing hand (`hand`, as the release
- * said: a link, a button, a video, which the double click opened), and nowhere else: in an editor
- * selecting is what a double click is for, and in any other app (mail, chat, music, a file dialog)
- * a double click opens something, as before. `title` is no longer needed, and kept for the callers
- * that still say it.
+ * in a browser, a reader (READER_APPS: Kindle, Books, Preview; a browser's PDF too) or a writing app,
+ * where a student double clicks a word to point at it (9 of the founder's 20 recorded taps were
+ * second or third clicks; 2026-11-15: "whenever you tap on some PDF or web page, it should
+ * understand it"; 2026-11-17, writing apps too: WRITING_APPS), and the card stays. Not under a pointing
+ * hand (`hand`, as the release said: a link, a button, a video, which the double click opened),
+ * and nowhere else: in any other app (mail, chat, music, a file dialog) a double click opens
+ * something, as before. `title` is no longer needed, and kept for the callers that still say it.
  */
 export function selectionKept(t: { words?: string; bundle?: string; title?: string; hand?: boolean }): boolean {
   return t.words === "select" && t.hand !== true && pointedInto(t.bundle);
@@ -239,18 +255,17 @@ export function tapActed(t: { acted: boolean; words?: string; bundle?: string; t
   return t.acted && !selectionKept(t) && !caretKept(t);
 }
 
-/** Whether a tap is a double tap (`clicks` two or more, as its release said: never the first
- *  click's verdict, which a Mac helper also says "select" once the second has come) in a browser,
- *  a reader or a PDF viewer, not under a pointing hand: the student wants that explained now, with
- *  no card to pick from (the page starts the lesson at once). Never in an editor. Whether it was on
- *  the words read there is the caller's to say (companion.ts onTap, tapOnWords). */
-export function explainsNow(t: { clicks?: number; bundle?: string; hand?: boolean }): boolean {
+/** Whether a tap is a double tap pointing at words (`clicks` two or more, as its release said:
+ *  never the first click's verdict, which a Mac helper also says "select" once the second has
+ *  come) in a browser, a reader, a PDF viewer or a writing app (pointedInto), not under a pointing
+ *  hand: its card comes up asking whether to explain (the founder, 2026-11-17: "when we double tap
+ *  on any passage or sentence we should see the menu asking if want me to explain this"). Until
+ *  then a double tap in a browser or a reader was explained at once, with no card, and one in an
+ *  editor was the editor's. Whether it was on the words read there is the caller's to say
+ *  (companion.ts onTap, tapOnWords). */
+export function doubleTapPoints(t: { clicks?: number; bundle?: string; hand?: boolean }): boolean {
   return (t.clicks ?? 1) >= 2 && t.hand !== true && pointedInto(t.bundle);
 }
-
-/** A double tap explained at once (explainsNow) on a window less than this long (ms) after the last
- *  one there is the same one's third click (or the Mac's late verdict on its first): not again. */
-export const EXPLAIN_AGAIN_MS = 1_000;
 
 /**
  * What a tap on another app's window comes to, with the companion on. "lesson": it is on the
@@ -258,8 +273,9 @@ export const EXPLAIN_AGAIN_MS = 1_000;
  * on the lesson page's own controls (the card, the dock), which took it. "private": a window it
  * never reads. "acted": a plain click did something in its app (a link, a button, a page turn);
  * an Option click is always the tutor's. "editor": a plain click in an editor, which is the
- * editor's. "card": the student may want help here, so the card is offered (and the window read
- * carefully meanwhile).
+ * editor's; a double tap there pointing at words (`pointing`: doubleTapPoints) is the card's.
+ * "card": the student may want help here, so the card is offered (and the window read carefully
+ * meanwhile).
  */
 export type TapRoute = "lesson" | "page" | "private" | "acted" | "editor" | "card";
 
@@ -270,12 +286,13 @@ export function tapRoute(t: {
   acted: boolean;
   editor: boolean;
   alt: boolean;
+  pointing?: boolean;
 }): TapRoute {
   if (t.onLesson) return "lesson";
   if (t.onPage) return "page";
   if (t.private) return "private";
   if (t.acted && !t.alt) return "acted";
-  if (t.editor && !t.alt) return "editor";
+  if (t.editor && !t.alt && !t.pointing) return "editor";
   return "card";
 }
 

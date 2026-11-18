@@ -9,8 +9,7 @@ import {
   circleAsked,
   clampBlobPlace,
   defaultBlobPlace,
-  EXPLAIN_AGAIN_MS,
-  explainsNow,
+  doubleTapPoints,
   isEditorApp,
   isPrivateApp,
   labelBounds,
@@ -268,9 +267,6 @@ const CAREFUL_KEPT = 4;
 const windowMoved = new Map<number, number>();
 /** The tap that last opened a card: its window, and when. */
 let cardTap: { window: number; at: number } | null = null;
-/** The last double tap explained at once (onTap): a tap on its window soon after is the same one's
- *  third click, or the Mac's late verdict on its first, and is not explained (nor carded) again. */
-let explainedNow: { window: number; at: number } | null = null;
 /** The latest releases heard, by id (a few): what a tap's recording says of its clicks and cursor,
  *  when it was heard (`at`, Date.now()), and whether its press was on the page's own controls
  *  (`page`, decided at the release and kept for its verdict). */
@@ -1216,7 +1212,8 @@ function onPress(press: ScreenPress): void {
   The careful read starts now (startCarefulRead), so the lesson's words are ready by the time the
   student picks: for every card, and on the lesson's window for a tap off the words it has read.
   For a double tap too (its first click's read, still on its way, is its own: startCarefulRead): in
-  a browser, a reader or a PDF viewer it is explained at once (onTap, explainsNow), from that read.
+  a browser, a reader, a PDF viewer or on a writing app's words its card asks whether to explain
+  (onTap, doubleTapPoints), from that read.
 */
 function onRelease(release: ScreenRelease): void {
   if (!on || held) return;
@@ -1228,13 +1225,19 @@ function onRelease(release: ScreenRelease): void {
   }
   const info = windowApps.get(release.window);
   const lessonNow = screenTeachLesson();
+  const editor = isEditorApp(info?.bundle);
+  // (a double tap on the words, in a writing app too: the student pointing, whose card asks)
+  const pointing =
+    doubleTapPoints({ clicks: release.clicks, bundle: info?.bundle, hand: release.hand }) &&
+    (!editor || tapOnWords(glances.get(release.window)?.read.lines ?? [], release));
   const route = tapRoute({
     onLesson: !page && release.window === lessonNow?.window,
     onPage: page,
     private: release.private || privateWindows.has(release.window) || isPrivateApp(info?.bundle),
     acted: false,
-    editor: isEditorApp(info?.bundle),
+    editor,
     alt: release.alt,
+    pointing,
   });
   if (route === "page" || route === "editor") return;
   const local = localPoint(release);
@@ -1252,9 +1255,9 @@ function onRelease(release: ScreenRelease): void {
     ...(route === "private" ? { private: true } : {}),
   });
   if (route === "private") return;
-  // (a second or third click is read for only where it may be explained at once, onTap: anywhere
-  // else its selection is its app's, and a whole careful read of the window would go for nothing)
-  if (release.clicks >= 2 && !explainsNow({ clicks: release.clicks, bundle: info?.bundle, hand: release.hand })) return;
+  // (a second or third click is read for only where it points, onTap: anywhere else its selection
+  // is its app's, and a whole careful read of the window would go for nothing)
+  if (release.clicks >= 2 && !pointing) return;
   // (on the lesson's words, the lesson has its read)
   if (route === "lesson" && tapOnWords(glances.get(release.window)?.read.lines ?? [], release)) return;
   startCarefulRead(release.id, release.window);
@@ -1320,13 +1323,15 @@ function startCarefulRead(id: number | null, window: number): void {
   something in its app, with what the words at the tap said (tapNumbers). One its app used (a link,
   a button, a page turn, a menu; "acted") or a double click (words selected; "select"): a card the
   page opened at the release goes at once (companion-withdraw), and the careful read taken for it
-  with it. An Option click is always the tutor's, but for a double click. A double click anywhere
-  but an editor (companionPlace.ts selectionKept), and a click that only put a caret in a browser
-  or a reader (caretKept), is the student pointing at a word, not the app's: its card stays (or
-  opens there) and its careful read is kept. A double tap in a browser, a reader or a PDF viewer
-  (explainsNow) is explained at once: the page hears it with `explain`, and starts the lesson.
-  Otherwise, where a card is wanted, the page hears the tap again (companion-tap, the release's
-  id), to open the card now if
+  with it. An Option click is always the tutor's, but for a double click. A double click in a
+  browser, a reader or an editor (companionPlace.ts selectionKept), and a click that only put a
+  caret in a browser or a reader (caretKept), is the student pointing at a word, not the app's: its
+  card stays (or opens there) and its careful read is kept. A double tap on the words
+  (doubleTapPoints, tapOnWords) gets the card asking whether to explain, never a lesson started at
+  once, and in an editor only on the words: elsewhere there it is the editor's (the founder,
+  2026-11-17: "when we double tap on any passage or sentence we should see the menu asking if want
+  me to explain this"). Where a card is wanted, the page hears the tap again (companion-tap, the
+  release's id), to open the card now if
   it waited for this (a margin, a pointing hand). Whether the click was on the page's own controls
   is what was decided at its release (onRelease): by now the cursor may be over the card painted
   then, and the verdict is still the tap's. A helper too old to say the release: the card is
@@ -1343,13 +1348,19 @@ function onTap(tap: ScreenTap): void {
   const hand = heard?.hand === true;
   const kept = selectionKept({ words: tap.words, bundle: info?.bundle, title, hand });
   const acted = tapActed({ acted: tap.acted, words: tap.words, bundle: info?.bundle, title, hand });
+  const editor = isEditorApp(info?.bundle);
+  // (a double tap on the words, in an editor too: the student pointing, whose card asks)
+  const pointing =
+    doubleTapPoints({ clicks: heard?.clicks, bundle: info?.bundle, hand }) &&
+    (!editor || tapOnWords(glances.get(tap.window)?.read.lines ?? [], tap));
   const route = tapRoute({
     onLesson: !page && tap.window === screenTeachLesson()?.window,
     onPage: page,
     private: privateWindows.has(tap.window) || isPrivateApp(info?.bundle),
     acted,
-    editor: isEditorApp(info?.bundle),
+    editor,
     alt: tap.alt,
+    pointing,
   });
   if (route !== "private" && route !== "page") recordTap(tap, info);
   if (route === "card" && tap.acted && !acted) {
@@ -1368,30 +1379,18 @@ function onTap(tap: ScreenTap): void {
     return;
   }
   if (route !== "card") return;
-  // (the same double tap's third click, or the Mac's later verdict on its first: it is being explained)
-  if (explainedNow && explainedNow.window === tap.window && Date.now() - explainedNow.at < EXPLAIN_AGAIN_MS) {
-    console.log(`[companion] tap in ${info?.app || "another app"}: part of the double tap being explained`);
-    return;
-  }
   const local = localPoint(tap);
   if (!local) return;
-  // A double tap in a browser, a reader or a PDF viewer, on the words the window's glance has (not a
-  // tab strip, a title bar, a field, nor under a pointing hand): explained at once (`explain`: the
-  // page starts the lesson from this tap, with no card to pick from), from the read its first click
-  // began. Off the words it is an ordinary tap, its card offered as for a single one.
-  const glance = glances.get(tap.window);
-  const onWords = Boolean(glance && !glance.stale && tapOnWords(glance.read.lines, tap));
-  const now = tap.id !== undefined && onWords && explainsNow({ clicks: heard?.clicks, bundle: info?.bundle, hand });
-  if (now) explainedNow = { window: tap.window, at: Date.now() };
+  // A double tap is a card like any tap's, asking whether to explain (doubleTapPoints): no lesson
+  // starts without the student's pick, so a page told `explain` is never told it here.
   sendToPage("screen-teach:companion-tap", {
     window: tap.window,
     x: local.x,
     y: local.y,
     ...(tap.id !== undefined ? { id: tap.id } : {}),
-    ...(now ? { explain: true } : {}),
   });
   cardTap = { window: tap.window, at: Date.now() };
-  if (now) console.log(`[companion] double tap in ${info?.app || "another app"}: explained now`);
+  if (pointing) console.log(`[companion] double tap in ${info?.app || "another app"}: its card asks`);
   if (tap.id === undefined) startCarefulRead(null, tap.window);
   else if (!carefulReads.has(tap.id)) startCarefulRead(tap.id, tap.window);
 }
@@ -1772,6 +1771,20 @@ async function explainAt(value: unknown): Promise<ExplainAnswer> {
   page explains the words between the press and the lift, from a careful read (circleRead), so it
   is kept the same way, its box from the press to the lift.
 */
+/*
+  The mouse came up, after a tap or a drag, on any window, the companion on: the page ends the
+  stroke it began at the press (screen-teach:press), so nothing more is drawn as the cursor merely
+  moves on. A release on the page's own card or dock, a plain click in an editor and a drag begun
+  on the page tell it nothing else (onRelease, onLift), and a page that heard the press kept
+  drawing the cursor's path as ink until its stroke timed out (the founder, 2026-11-17: "we have to
+  basically only draw when we drag our cursor like tap and drag not just hover around"). Told after
+  onRelease and onLift (installCompanion), so a drag's lift still finds its stroke; held or not, so
+  a stroke never outlives its press.
+*/
+function onUp(): void {
+  if (on) sendToPage("screen-teach:up", {});
+}
+
 function onLift(lift: ScreenLift): void {
   if (!on || held || pressWasThePage() || overlayInteractive()) return;
   const local = localPoint(lift);
@@ -1890,6 +1903,9 @@ export function installCompanion(): void {
   watchEvents.on("shift", onShift);
   // (a drag's end: circle to explain)
   watchEvents.on("lift", onLift);
+  // (any mouse up, after the two above: the page's stroke ends with it)
+  watchEvents.on("release", onUp);
+  watchEvents.on("lift", onUp);
   // (another document in a window it knows, while a lesson watches one)
   watchEvents.on("ident", onIdent);
   // (the screen helper keeps stopping, and is started again later and later, or is back: the blob
