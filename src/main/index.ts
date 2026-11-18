@@ -133,6 +133,15 @@ if (!app.requestSingleInstanceLock()) {
     });
     registerProtocol();
     setBrowserSignIn(beginBrowserSignIn);
+    // The exchange's outcome, in the sign-in log: the last step a browser sign-in can fail at
+    // inside the app (renderer.ts).
+    appEvents.on("sign-in-exchange", (e: { status: number; refused: string | null; kept: boolean }) => {
+      authLog(
+        e.refused
+          ? `the server refused the code (${e.refused}, ${e.status})`
+          : `the server took the code (${e.status}); session ${e.kept ? "kept in the app" : "NOT kept: the app stays signed out"}`,
+      );
+    });
 
     // The web app may use the microphone (dictation, talking to the tutor) and the
     // clipboard; nothing else, and nothing at all from any other origin.

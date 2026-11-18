@@ -14,6 +14,12 @@ import { TIMED } from "./apiTiming";
 
   Both the sign-in screen (signin.ts) and the bundled web app's /api (renderer.ts) go
   through here, so the session one starts is the session the other renews.
+
+  One exception, `jarCookies`: Chromium never shows a redirect's Set-Cookie to the app (the
+  'redirect' event's headers leave it out; measured on Electron 44), so a cookie that arrives on
+  a redirect could never be read here. The desktop sign-in's exchange is such a redirect, and its
+  cookie is the session itself: that request lets Chromium send and keep its cookies, the way the
+  window's own navigation would.
 */
 
 export interface ServerResponse {
@@ -47,17 +53,24 @@ function priorityOf(url: string): "highest" | "low" | undefined {
 
 export async function serverRequest(
   url: string,
-  init: { method?: string; headers?: Record<string, string>; body?: Uint8Array | string },
+  init: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: Uint8Array | string;
+    /** Chromium sends and keeps this request's cookies itself, a redirect's too (above). */
+    jarCookies?: boolean;
+  },
 ): Promise<ServerResponse> {
   const method = (init.method ?? "GET").toUpperCase();
-  const cookie = await cookieHeaderFor(url);
+  const jarCookies = init.jarCookies === true;
+  const cookie = jarCookies ? "" : await cookieHeaderFor(url);
   return new Promise<ServerResponse>((resolve, reject) => {
     const priority = priorityOf(url);
     const request = net.request({
       method,
       url,
       session: session.defaultSession,
-      useSessionCookies: false,
+      useSessionCookies: jarCookies,
       redirect: "manual",
       ...(priority ? { priority } : {}),
     });

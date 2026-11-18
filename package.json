@@ -1,7 +1,7 @@
 {
   "name": "tutornote-windows",
   "productName": "Tutornote",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Tutornote for Windows: the web app in a window of its own.",
   "private": true,
   "author": "Tutornote",
@@ -13,8 +13,9 @@
     "build": "tsc -p tsconfig.json && node scripts/build-screen-helper.mjs",
     "helper": "node scripts/build-screen-helper.mjs --force",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --experimental-strip-types --test scripts/tests/boardHost.test.ts scripts/tests/boardPlace.test.ts scripts/tests/companionPlace.test.ts scripts/tests/speechLog.test.ts scripts/tests/apiTiming.test.ts scripts/tests/launchReveal.test.ts scripts/tests/docIdentity.test.ts scripts/tests/env.test.ts scripts/tests/argGuard.test.ts scripts/tests/authCallback.test.ts scripts/tests/micConsent.test.ts scripts/tests/screenRead.test.ts scripts/tests/screenWatch.test.ts",
+    "test": "node --experimental-strip-types --test scripts/tests/boardHost.test.ts scripts/tests/boardPlace.test.ts scripts/tests/companionPlace.test.ts scripts/tests/speechLog.test.ts scripts/tests/apiTiming.test.ts scripts/tests/launchReveal.test.ts scripts/tests/docIdentity.test.ts scripts/tests/env.test.ts scripts/tests/argGuard.test.ts scripts/tests/authCallback.test.ts scripts/tests/sessionHandOff.test.ts scripts/tests/domainSplit.test.ts scripts/tests/release.test.ts scripts/tests/micConsent.test.ts scripts/tests/screenRead.test.ts scripts/tests/screenWatch.test.ts",
     "renderer": "node scripts/build-renderer.mjs",
+    "release": "node scripts/release.mjs",
     "start": "npm run build && electron .",
     "pack": "npm run build && electron-builder --win --x64 --dir --publish never --config electron-builder.config.cjs",
     "dist": "npm run build && electron-builder --win --x64 --publish never --config electron-builder.config.cjs"

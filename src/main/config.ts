@@ -11,10 +11,14 @@ import { devValue } from "./env";
 const envOverride = (name: string): string | undefined => devValue(process.env[name], app.isPackaged);
 
 /**
- * Where the web app and its API live: tutornote.ai, or ANOTHERNOTES_URL for a test
- * server or a local build (http://<test-server>/, http://localhost:8080).
+ * Where the web app and its API live: app.tutornote.ai, the application's own name since the
+ * split of November 2026 (the domain, tutornote.ai, kept the landing and marketing pages), or
+ * ANOTHERNOTES_URL for a test server or a local build (http://<test-server>/,
+ * http://localhost:8080).
  */
-const DEFAULT_SITE = "https://tutornote.ai";
+const DEFAULT_SITE = "https://app.tutornote.ai";
+/** The website: the landing page, the terms, the privacy policy and the downloads. */
+const DEFAULT_WEBSITE = "https://tutornote.ai";
 
 function resolveSite(): URL {
   const override = envOverride("ANOTHERNOTES_URL");
@@ -41,7 +45,15 @@ export function originOf(url: string): string {
 const SITE = resolveSite();
 /** The server: the web app's pages in the first version, and always its API. */
 export const SITE_ORIGIN = SITE.origin;
-export const WEBSITE_URL = DEFAULT_SITE;
+/** True for the usual server, app.tutornote.ai; false for a test server or a local build. */
+export const USUAL_SERVER = SITE_ORIGIN === new URL(DEFAULT_SITE).origin;
+/** The website, for the menu's "Tutornote Website" and the About panel. */
+export const WEBSITE_URL = DEFAULT_WEBSITE;
+/**
+ * Where the website's pages open (the terms, the privacy policy, the waitlist): tutornote.ai
+ * for the usual server, and a test server's own copy of them otherwise.
+ */
+export const WEBSITE_ORIGIN = USUAL_SERVER ? new URL(DEFAULT_WEBSITE).origin : SITE_ORIGIN;
 
 /**
  * The bundled renderer: the web app's production build, copied into renderer/ by

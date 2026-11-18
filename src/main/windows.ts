@@ -13,7 +13,7 @@ import {
 } from "electron";
 import path from "node:path";
 import { adjacentTab, boardBarInset, BOARD_TAB_ID, tabOrder, type MainLook } from "./boardHost";
-import { API_ORIGIN, APP_ORIGIN, APP_URL, originOf, SITE_ORIGIN, WEBSITE_URL } from "./config";
+import { API_ORIGIN, APP_ORIGIN, APP_URL, originOf, SITE_ORIGIN, USUAL_SERVER, WEBSITE_ORIGIN } from "./config";
 import { appEvents } from "./events";
 import { LAUNCH_START, launchStep, SPLASH_DELAY_MS, SPLASH_MAX_MS, type LaunchEvent, type LaunchState } from "./launchReveal";
 import { openExternal } from "./links";
@@ -277,17 +277,18 @@ const isAppUrl = (url: string): boolean => {
 const SIGN_IN_PATHS = new Set(["/auth"]);
 
 /**
- * The website's own pages (the web repo's scripts/site-routes.mjs PUBLIC_PAGES). A link to
- * one that asks for a new window, like the upload dialog's "How we handle it" (/privacy),
- * opens in the browser on the server the app talks to: in the home view it would take the
- * dashboard's place, and whatever was half done there (an upload being chosen) with it.
+ * The website's own pages (the web repo's scripts/site-routes.mjs PUBLIC_PAGES, and /pricing
+ * from its SWITCHED_PAGES). A link to one that asks for a new window, like the upload dialog's
+ * "How we handle it" (/privacy), opens in the browser, on the website (WEBSITE_ORIGIN:
+ * tutornote.ai, or a test server's own copy): in the home view it would take the dashboard's
+ * place, and whatever was half done there (an upload being chosen) with it.
  */
-const WEBSITE_PATHS = new Set(["/", "/privacy", "/terms", "/contact", "/waitlist", "/features"]);
+const WEBSITE_PATHS = new Set(["/", "/privacy", "/terms", "/contact", "/waitlist", "/features", "/download", "/pricing"]);
 const websiteUrlOf = (url: string): string | null => {
   const where = pathOf(url);
   if (!where || !WEBSITE_PATHS.has(where.toLowerCase())) return null;
   const u = new URL(url);
-  return `${SITE_ORIGIN}${u.pathname}${u.search}${u.hash}`;
+  return `${WEBSITE_ORIGIN}${u.pathname}${u.search}${u.hash}`;
 };
 const pathOf = (url: string): string | null => {
   try {
@@ -1704,8 +1705,8 @@ export function showSignIn(win: BrowserWindow = focusMainWindow()): void {
   selectPage(home.id);
   // The website (for its terms and privacy pages and, when the app has none built in, the
   // landing page's videos), and which server this is when it is not the usual one.
-  const query: Record<string, string> = { site: SITE_ORIGIN };
-  if (SITE_ORIGIN !== new URL(WEBSITE_URL).origin) query.server = new URL(SITE_ORIGIN).host;
+  const query: Record<string, string> = { site: WEBSITE_ORIGIN };
+  if (!USUAL_SERVER) query.server = new URL(SITE_ORIGIN).host;
   const screen = home;
   void screen.view.webContents
     .loadFile(path.join(app.getAppPath(), "static", "signin.html"), { query })
